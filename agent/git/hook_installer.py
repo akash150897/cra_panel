@@ -15,13 +15,13 @@ _HOOK_TEMPLATE = """\
 # Code Review Agent — pre-commit hook
 # Auto-installed by: cra install
 
-set -e
-
+# Use forward slashes — backslashes break Git's sh.exe on Windows
 PYTHON="{python_bin}"
 
 # Review only staged files before the commit is created
 "$PYTHON" -m agent.cli review --staged
-exit $?
+STATUS=$?
+exit $STATUS
 """
 
 
@@ -44,7 +44,9 @@ def install_hook(repo_root: Optional[str] = None, force: bool = False) -> bool:
         return False
 
     hook_path = hooks_dir / "pre-commit"
-    python_bin = sys.executable
+    # Convert backslashes to forward slashes — Git's sh.exe on Windows
+    # silently fails when the Python path contains backslashes
+    python_bin = sys.executable.replace("\\", "/")
 
     if hook_path.exists() and not force:
         content = hook_path.read_text()

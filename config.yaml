@@ -1,0 +1,46 @@
+# Code Review Agent — project-level configuration
+# Place this file in your repository root as .code-review-agent.yaml
+
+# ── Behaviour ──────────────────────────────────────────────────────────
+# Block the push when error-severity violations are found (recommended: true)
+block_on_error: true
+
+# Also block when warning-severity violations are found (stricter mode)
+block_on_warning: false
+
+# ── Logging ───────────────────────────────────────────────────────────
+# Levels: DEBUG | INFO | WARNING | ERROR
+log_level: WARNING
+
+# ── Rules ─────────────────────────────────────────────────────────────
+# Path to a custom rules directory (leave null to use the bundled rules/)
+rules_dir: null
+
+# Remote rules API — supply a URL to fetch centralised rules at runtime
+# remote_rules_url: https://rules.yourcompany.com/api/v1
+# remote_rules_token: ${REVIEW_RULES_API_TOKEN}   # read from env
+remote_rules_url: null
+remote_rules_token: null
+
+# ── File filtering ────────────────────────────────────────────────────
+# Directories/path segments to always skip
+exclude_paths:
+  - .git
+  - node_modules
+  - __pycache__
+  - venv
+  - .venv
+  - dist
+  - build
+  - .next
+  - .nuxt
+  - coverage
+  - .mypy_cache
+  - .pytest_cache
+  - migrations
+
+# Maximum file size to analyse (files larger than this are skipped)
+max_file_size_kb: 500
+
+# ── Display ───────────────────────────────────────────────────────────
+use_color: true

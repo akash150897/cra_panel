@@ -2,6 +2,7 @@
 
 import os
 import sys
+from pathlib import Path
 from typing import List, Optional
 
 from agent.analyzer.javascript_analyzer import JavaScriptAnalyzer

@@ -169,9 +169,10 @@ def run_review(
 
         reporter.print_result(result, block_on_warning=config.block_on_warning)
 
+        ai_issues: list = []
         if ai_review:
             from agent.ai.ai_reviewer import run_ai_review
-            ai_code = run_ai_review(
+            ai_code, ai_issues = run_ai_review(
                 files=subproject_files,
                 project_root=subproject_root,
                 language=ctx.language,
@@ -182,10 +183,104 @@ def run_review(
             if ai_code != 0:
                 final_code = 1
 
-        if result.has_blocking_issues(config.block_on_warning):
+        blocked = result.has_blocking_issues(config.block_on_warning)
+        if blocked:
             final_code = 1
 
+        # ── Build critical issues list (error-severity rules + high/medium AI issues) ──
+        rule_critical_issues = [
+            {
+                "source": "rules",
+                "severity": v.severity.value if hasattr(v.severity, "value") else str(v.severity),
+                "file": v.file_path,
+                "line": v.line_number,
+                "rule_id": v.rule_id,
+                "category": v.category,
+                "message": v.message,
+            }
+            for v in result.violations
+            if str(getattr(v.severity, "value", v.severity)) == "error"
+        ]
+        critical_issues = rule_critical_issues + ai_issues
+
+        # ── Silently report to CRA server ────────────────────────────────
+        _post_review_to_server(
+            language=ctx.language,
+            framework=ctx.framework or "",
+            result=result,
+            blocked=blocked,
+            repo_root=root,
+            critical_issues=critical_issues,
+        )
+
     return final_code
+
+
+def _post_review_to_server(
+    language: str,
+    framework: str,
+    result: "ReviewResult",
+    blocked: bool,
+    repo_root: Optional[str] = None,
+    critical_issues: Optional[list] = None,
+) -> None:
+    """Silently POST review result to CRA server. Never raises — commit must not be blocked."""
+    try:
+        from agent.git.hook_installer import load_cra_config
+        import requests
+
+        from agent.git.hook_installer import _CRA_SERVER_URL
+        cra_cfg = load_cra_config(repo_root=repo_root)
+        server_url = _CRA_SERVER_URL.strip()
+        project_key = cra_cfg.get("project_key", "").strip()
+        developer_email = cra_cfg.get("developer_email", "").strip()
+
+        if not server_url or not project_key or not developer_email:
+            return  # not configured — skip silently
+
+        # Categorize violations by type
+        security_issues = 0
+        quality_issues = 0
+        style_issues = 0
+        performance_issues = 0
+        
+        for v in result.violations:
+            category = v.category.lower()
+            if category in ("security", "secrets", "authentication", "authorization"):
+                security_issues += 1
+            elif category in ("quality", "correctness", "maintainability", "error_handling"):
+                quality_issues += 1
+            elif category in ("style", "naming", "formatting", "convention"):
+                style_issues += 1
+            elif category in ("performance", "optimization", "efficiency"):
+                performance_issues += 1
+            else:
+                # Default to quality for uncategorized
+                quality_issues += 1
+
+        requests.post(
+            f"{server_url.rstrip('/')}/api/reviews/submit",
+            json={
+                "developer_email": developer_email,
+                "project_key": project_key,
+                "language": language,
+                "framework": framework,
+                "quality_score": None,  # rule-only review has no numeric score
+                "high_issues": len([v for v in result.violations if v.severity == "error"]),
+                "medium_issues": len([v for v in result.violations if v.severity == "warning"]),
+                "low_issues": len([v for v in result.violations if v.severity not in ("error", "warning")]),
+                "blocked": blocked,
+                "files_reviewed": result.files_scanned,
+                "security_issues": security_issues,
+                "quality_issues": quality_issues,
+                "style_issues": style_issues,
+                "performance_issues": performance_issues,
+                "critical_issues": (critical_issues or [])[:20],  # cap at 20 items
+            },
+            timeout=5,
+        )
+    except Exception:
+        pass  # never block a commit because the reporting server is unreachable
 
 
 def run_as_hook() -> None:

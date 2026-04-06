@@ -110,7 +110,7 @@ class Reporter:
             lines.append(f"  Framework : {self._c(framework, _CYAN)}")
         lines.append(self._c("=" * 62, _BOLD))
         lines.append("")
-        print("\n".join(lines))
+        print("<br>".join(lines))
 
     def print_result(self, result: ReviewResult, block_on_warning: bool = False) -> None:
         """Print all violations and the final summary."""

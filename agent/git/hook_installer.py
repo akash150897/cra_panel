@@ -90,6 +90,250 @@ def _prompt_api_key() -> None:
 
     _save_api_key(env_var, key)
 
+_CRA_CONFIG = Path.home() / ".cra" / "config.json"
+_REPO_PROJECT_KEY_FILE = ".git/cra_project_key"   # relative to repo root, not tracked by git
+
+
+_CRA_SERVER_URL = "https://your-cra-server.up.railway.app"
+
+# ── Server config ──────────────────────────────────────────────────────────────
+
+def _get_git_identity() -> tuple:
+    """Read developer name and email from git global config."""
+    try:
+        name = subprocess.check_output(
+            ["git", "config", "--global", "user.name"],
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
+        email = subprocess.check_output(
+            ["git", "config", "--global", "user.email"],
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
+        return name, email
+    except Exception:
+        return "", ""
+
+
+def _save_cra_config(data: dict) -> None:
+    """Save developer config to ~/.cra/config.json"""
+    _CRA_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    import json
+    existing = {}
+    if _CRA_CONFIG.exists():
+        try:
+            existing = json.loads(_CRA_CONFIG.read_text())
+        except Exception:
+            pass
+    existing.update(data)
+    _CRA_CONFIG.write_text(json.dumps(existing, indent=2))
+
+
+def _save_repo_project_key(repo_root: str, project_key: str) -> None:
+    """Save project key into .git/cra_project_key inside the repo (not tracked by git)."""
+    key_file = Path(repo_root) / _REPO_PROJECT_KEY_FILE
+    key_file.write_text(project_key, encoding="utf-8")
+
+
+def _load_repo_project_key(repo_root: Optional[str] = None) -> str:
+    """Read project key from .git/cra_project_key for the current/given repo."""
+    from agent.git.git_utils import get_repo_root
+    root = repo_root or get_repo_root()
+    if not root:
+        return ""
+    key_file = Path(root) / _REPO_PROJECT_KEY_FILE
+    if key_file.exists():
+        return key_file.read_text(encoding="utf-8").strip()
+    return ""
+
+
+def load_cra_config(repo_root: Optional[str] = None) -> dict:
+    """Load developer config — global fields from ~/.cra/config.json,
+    project_key from .git/cra_project_key of the current repo."""
+    import json
+    config = {}
+    if _CRA_CONFIG.exists():
+        try:
+            config = json.loads(_CRA_CONFIG.read_text())
+        except Exception:
+            pass
+    # per-repo project key overrides anything stored globally
+    repo_key = _load_repo_project_key(repo_root)
+    if repo_key:
+        config["project_key"] = repo_key
+    return config
+
+
+def _register_on_server(name: str, email: str, project_key: str, server_url: str) -> bool:
+    """Register developer on the CRA server."""
+    try:
+        import requests as req
+        response = req.post(
+            f"{server_url.rstrip('/')}/api/developers/register",
+            json={"name": name, "email": email, "project_key": project_key},
+            timeout=10,
+        )
+        if response.status_code == 200:
+            data = response.json()
+            print(f"[OK] Registered in project '{data.get('project')}' — TL: {data.get('tl')}")
+            return True
+        else:
+            print(f"[WARNING] Server registration failed: {response.status_code}")
+            return False
+    except Exception as e:
+        print(f"[WARNING] Could not reach server: {e}")
+        return False
+
+
+def _prompt_developer_setup(repo_root: Optional[str] = None) -> None:
+    """Ask developer for project key and register on server."""
+    from agent.git.git_utils import get_repo_root
+    root = repo_root or get_repo_root()
+
+    global_config = _load_global_config()
+    existing_key = _load_repo_project_key(root)
+
+    if existing_key and global_config.get("developer_email"):
+        print(f"\n[INFO] This repo is already linked to project key: {existing_key}")
+        print(f"[INFO] Registered as: {global_config.get('developer_name')} ({global_config.get('developer_email')})")
+        try:
+            answer = input("       Do you want to update registration for this repo? [y/N] ").strip().lower()
+        except KeyboardInterrupt:
+            return
+        if answer != "y":
+            return
+
+    print("\n[SETUP] Developer Registration")
+    print("─" * 40)
+
+    # auto-detect from git
+    git_name, git_email = _get_git_identity()
+
+    if git_name and git_email:
+        print(f"  Detected from git config:")
+        print(f"  Name  : {git_name}")
+        print(f"  Email : {git_email}")
+        try:
+            use_git = input("  Use these details? [Y/n] ").strip().lower()
+        except KeyboardInterrupt:
+            return
+        if use_git in ("", "y"):
+            name, email = git_name, git_email
+        else:
+            name, email = _ask_name_email()
+    else:
+        print("  Could not detect git identity. Please enter manually.")
+        name, email = _ask_name_email()
+
+    if not name or not email:
+        print("[WARNING] Name/email required — skipping registration.")
+        return
+
+    server_url = _CRA_SERVER_URL
+    print(f"\n  Server     : {server_url}")
+
+    # ask for project key
+    try:
+        project_key = input("  Enter Project Key (get from your TL): ").strip()
+    except KeyboardInterrupt:
+        print("\n[WARNING] Skipped.")
+        return
+
+    if not project_key:
+        print("[WARNING] Project key required — skipping registration.")
+        return
+
+    # register on server
+    success = _register_on_server(name, email, project_key, server_url)
+
+    # save global fields (name, email) to ~/.cra/config.json
+    # server_url is hardcoded in the package — no need to store it
+    _save_cra_config({
+        "developer_name": name,
+        "developer_email": email,
+    })
+
+    # save project_key into this repo's .git/cra_project_key
+    if root:
+        _save_repo_project_key(root, project_key)
+        print(f"[OK] Project key saved to {root}/.git/cra_project_key")
+
+    if success:
+        print("[OK] Developer config saved to ~/.cra/config.json")
+
+
+def _load_global_config() -> dict:
+    """Load only the global config file, without merging repo project key."""
+    import json
+    if not _CRA_CONFIG.exists():
+        return {}
+    try:
+        return json.loads(_CRA_CONFIG.read_text())
+    except Exception:
+        return {}
+
+
+def _ask_server_url() -> str:
+    """Prompt for CRA server URL."""
+    try:
+        return input("\n  Enter CRA Server URL (e.g. https://your-server.com): ").strip()
+    except KeyboardInterrupt:
+        return ""
+
+
+def prompt_tl_setup() -> None:
+    """Interactive TL project setup — called by `cra setup` command."""
+    print("\n[SETUP] Create a new CRA project (TL)\n" + "─" * 40)
+    server_url = _CRA_SERVER_URL
+    print(f"  Server: {server_url}\n")
+
+    try:
+        project_name = input("  Project name                                          : ").strip()
+        tl_name      = input("  Your name (TL)                                        : ").strip()
+        tl_email     = input("  Your email (TL)                                       : ").strip()
+    except KeyboardInterrupt:
+        print("\n[WARNING] Cancelled.")
+        return
+
+    if not project_name or not tl_name or not tl_email:
+        print("[ERROR] All fields are required.")
+        return
+
+    try:
+        import requests as req
+        response = req.post(
+            f"{server_url.rstrip('/')}/api/projects/create",
+            json={
+                "name": project_name,
+                "tl_name": tl_name,
+                "tl_email": tl_email,
+                # flow_url not sent — server uses FLOW_URL env var automatically
+            },
+            timeout=10,
+        )
+        if response.status_code == 200:
+            data = response.json()
+            print("\n" + "=" * 50)
+            print(f"  Project created: {project_name}")
+            print(f"  Project Key    : {data['project_key']}")
+            print("=" * 50)
+            print("\n  Share this project_key with your team developers.")
+            print("  They will enter it during  cra install\n")
+        else:
+            print(f"[ERROR] Server returned {response.status_code}: {response.text}")
+    except Exception as e:
+        print(f"[ERROR] Could not reach server: {e}")
+
+
+def _ask_name_email() -> tuple:
+    """Ask developer to enter name and email manually."""
+    try:
+        name = input("  Your name : ").strip()
+        email = input("  Your email: ").strip()
+        return name, email
+    except KeyboardInterrupt:
+        return "", ""
+
+
 _HOOK_TEMPLATE = """\
 #!/bin/sh
 # Code Review Agent — pre-commit hook
@@ -158,6 +402,9 @@ def install_hook(repo_root: Optional[str] = None, force: bool = False) -> bool:
 
     # Ask for API key
     _prompt_api_key()
+
+    # Register developer on CRA server (pass repo_root so project key is saved per-repo)
+    _prompt_developer_setup(repo_root=str(root))
 
     return True
 

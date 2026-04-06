@@ -167,6 +167,12 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
         _prompt_api_key()
         return 0
 
+    # ── setup (TL creates project on server) ─────────────────────────────
+    elif command == "setup":
+        from agent.git.hook_installer import prompt_tl_setup
+        prompt_tl_setup()
+        return 0
+
     else:
         print(f"[ERROR] Unknown command '{command}'. Run with --help for usage.")
         return 2

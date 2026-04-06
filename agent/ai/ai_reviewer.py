@@ -3,7 +3,7 @@
 import json
 import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from agent.utils.logger import get_logger
 
@@ -58,12 +58,13 @@ def run_ai_review(
     framework: Optional[str],
     api_key: Optional[str] = None,
     model: str = _DEFAULT_MODEL,
-) -> int:
+) -> Tuple[int, List[dict]]:
     """Run AI-powered deep review using OpenAI or Claude API (auto-detected by key).
 
     Returns:
-        0 — no high-severity issues found
-        1 — high-severity issues found
+        (exit_code, critical_issues)
+        exit_code: 0 — no high-severity issues found, 1 — high-severity issues found
+        critical_issues: list of high-severity issue dicts from the AI response
     """
     # Resolve API key — priority: Groq > Gemini > OpenAI > Claude
     groq_key   = api_key or os.getenv("GROQ_API_KEY")
@@ -77,12 +78,12 @@ def run_ai_review(
             f"{_YELLOW}[AI] No API key found. Set GROQ_API_KEY, GEMINI_API_KEY, "
             f"OPENAI_API_KEY, or ANTHROPIC_API_KEY as an environment variable.{_RESET}"
         )
-        return 0
+        return 0, []
 
     file_contents = _read_files(files, project_root)
     if not file_contents:
         print(f"{_YELLOW}[AI] No readable files found — skipping AI review.{_RESET}")
-        return 0
+        return 0, []
 
     folder_structure = _get_folder_structure(project_root)
     prompt = _build_prompt(file_contents, folder_structure, language, framework)
@@ -111,7 +112,7 @@ def run_ai_review(
             response_text = _call_claude(claude_key, _CLAUDE_MODEL, prompt)
     except Exception as exc:
         print(f"{_YELLOW}[AI] API call failed: {exc}{_RESET}")
-        return 0
+        return 0, []
 
     return _parse_and_display(response_text)
 
@@ -302,21 +303,21 @@ Return ONLY a valid JSON object — no markdown fences, no text outside the JSON
 
 # ── Output rendering ──────────────────────────────────────────────────────────
 
-def _parse_and_display(response_text: str) -> int:
-    """Parse Claude's JSON response and print formatted terminal output."""
+def _parse_and_display(response_text: str) -> Tuple[int, List[dict]]:
+    """Parse the AI JSON response, print formatted terminal output, and return (exit_code, critical_issues)."""
     text = response_text.strip()
     start = text.find("{")
     end   = text.rfind("}") + 1
 
     if start == -1 or end == 0:
         print(f"{_YELLOW}[AI] Could not parse response:\n{text[:500]}{_RESET}")
-        return 0
+        return 0, []
 
     try:
         data = json.loads(text[start:end])
     except json.JSONDecodeError as exc:
         print(f"{_YELLOW}[AI] JSON parse error: {exc}{_RESET}")
-        return 0
+        return 0, []
 
     has_high = False
 
@@ -441,7 +442,21 @@ def _parse_and_display(response_text: str) -> int:
     else:
         print(f"  {_GREEN}✅  No high severity issues — good to go.{_RESET}\n")
 
-    return 1 if has_high else 0
+    # Build the list of critical (high + medium) AI issues to forward to the server
+    critical_ai_issues = [
+        {
+            "source": "ai",
+            "severity": i.get("severity", "high"),
+            "file": i.get("file", ""),
+            "line": i.get("line"),
+            "category": i.get("category", ""),
+            "message": i.get("problem", ""),
+            "fix": i.get("fix", ""),
+        }
+        for i in (high + medium)
+    ]
+
+    return 1 if has_high else 0, critical_ai_issues
 
 
 def _print_issue(issue: dict, color: str) -> None:

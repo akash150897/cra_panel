@@ -181,6 +181,7 @@ def _ensure_eslint(project_root: str, framework: Optional[str]) -> None:
         cwd=project_root,
         capture_output=True,
         text=True,
+        shell=True,
     )
     if result.returncode != 0:
         print(f"{_YELLOW}[LINT] ESLint auto-install failed: {result.stderr.strip()}{_RESET}")
@@ -216,6 +217,7 @@ def _ensure_unused_imports_plugin(project_root: str) -> None:
         cwd=project_root,
         capture_output=True,
         text=True,
+        shell=True,
     )
     if result.returncode != 0:
         print(f"{_YELLOW}[LINT] Plugin install failed: {result.stderr.strip()}{_RESET}")

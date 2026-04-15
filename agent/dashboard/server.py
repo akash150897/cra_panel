@@ -143,9 +143,17 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if path == "/api/file":
             qs = parse_qs(parsed.query)
             filepath = qs.get("path", [""])[0]
+            # Normalise path separators for Windows compatibility
+            normalised = os.path.normpath(filepath)
             with _scan_lock:
                 sources = _scan_result.get("file_sources", {})
-            lines = sources.get(filepath, [])
+            lines = sources.get(filepath) or sources.get(normalised) or []
+            # Fallback: read from disk if not in memory
+            if not lines and os.path.isfile(normalised):
+                try:
+                    lines = Path(normalised).read_text(encoding="utf-8", errors="replace").splitlines()
+                except OSError:
+                    pass
             self._json_response({"path": filepath, "lines": lines})
             return
 
@@ -206,10 +214,21 @@ def run_dashboard(project_dir: str, port: int = 9090,
     total = result["summary"]["total"]
 
     print(f"  Found {total} issue(s): {errs} error(s), {warns} warning(s), {infos} info(s)")
+    # Try to bind to the port, auto-increment if in use
+    server = None
+    for attempt_port in range(port, port + 10):
+        try:
+            server = HTTPServer(("127.0.0.1", attempt_port), DashboardHandler)
+            port = attempt_port
+            break
+        except OSError as e:
+            if attempt_port == port + 9:
+                print(f"  [ERROR] Could not find an available port ({port}-{attempt_port}).")
+                return 2
+            continue
+
     print(f"\n  Starting dashboard on http://localhost:{port}")
     print(f"  Press Ctrl+C to stop.\n")
-
-    server = HTTPServer(("127.0.0.1", port), DashboardHandler)
 
     if not no_open:
         threading.Timer(0.5, lambda: webbrowser.open(f"http://localhost:{port}")).start()

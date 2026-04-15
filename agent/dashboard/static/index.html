@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CRA Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            bg: { dark: '#0f1117', card: '#161b22', hover: '#1c2333' },
+            accent: { blue: '#58a6ff', green: '#3fb950', red: '#f85149', yellow: '#d29922', purple: '#bc8cff' },
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+    body { font-family: 'Inter', sans-serif; }
+    .mono { font-family: 'JetBrains Mono', monospace; }
+    .code-line { transition: background 0.15s; }
+    .code-line.highlighted { background: rgba(248, 81, 73, 0.12); border-left: 3px solid #f85149; }
+    .code-line.highlighted-warn { background: rgba(210, 153, 34, 0.10); border-left: 3px solid #d29922; }
+    .code-line.highlighted-info { background: rgba(88, 166, 255, 0.08); border-left: 3px solid #58a6ff; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #161b22; }
+    ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+    .severity-badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 9999px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+    .fade-in { animation: fadeIn 0.3s ease-in; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    .sidebar-item { transition: all 0.15s; }
+    .sidebar-item:hover { background: #1c2333; }
+    .sidebar-item.active { background: #1c2333; border-left: 3px solid #58a6ff; }
+  </style>
+</head>
+<body class="h-full bg-bg-dark text-gray-300">
+  <div id="app" class="h-full flex flex-col">
+    <!-- Top Nav -->
+    <header class="bg-bg-card border-b border-gray-800 px-6 py-3 flex items-center justify-between shrink-0">
+      <div class="flex items-center gap-3">
+        <div class="w-8 h-8 rounded-lg bg-accent-blue flex items-center justify-center">
+          <svg class="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+        </div>
+        <h1 class="text-lg font-bold text-white">Code Review Agent</h1>
+        <span class="text-xs text-gray-500 ml-2 mono" id="projectPath"></span>
+      </div>
+      <div class="flex items-center gap-4">
+        <span class="text-xs text-gray-500" id="langBadge"></span>
+        <button onclick="rescan()" class="px-3 py-1.5 bg-accent-blue/20 text-accent-blue text-sm font-medium rounded-lg hover:bg-accent-blue/30 transition">
+          Rescan
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <div class="flex flex-1 overflow-hidden">
+      <!-- Sidebar: File List -->
+      <aside class="w-80 bg-bg-card border-r border-gray-800 flex flex-col shrink-0 overflow-hidden">
+        <!-- Stats Cards -->
+        <div class="p-4 border-b border-gray-800">
+          <div class="grid grid-cols-3 gap-2">
+            <div class="bg-bg-dark rounded-lg p-3 text-center">
+              <div class="text-2xl font-bold text-accent-red" id="errorCount">0</div>
+              <div class="text-xs text-gray-500 mt-1">Errors</div>
+            </div>
+            <div class="bg-bg-dark rounded-lg p-3 text-center">
+              <div class="text-2xl font-bold text-accent-yellow" id="warnCount">0</div>
+              <div class="text-xs text-gray-500 mt-1">Warnings</div>
+            </div>
+            <div class="bg-bg-dark rounded-lg p-3 text-center">
+              <div class="text-2xl font-bold text-accent-blue" id="infoCount">0</div>
+              <div class="text-xs text-gray-500 mt-1">Info</div>
+            </div>
+          </div>
+          <!-- Duplication -->
+          <div class="mt-3 bg-bg-dark rounded-lg p-3">
+            <div class="flex justify-between items-center">
+              <span class="text-xs text-gray-500">Code Duplication</span>
+              <span class="text-sm font-bold" id="dupPercent">0%</span>
+            </div>
+            <div class="mt-2 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+              <div class="h-full bg-accent-green rounded-full transition-all" id="dupBar" style="width:0%"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Filters -->
+        <div class="px-4 py-3 border-b border-gray-800 flex gap-2">
+          <button class="filter-btn active px-2 py-1 text-xs rounded-md bg-gray-700/50 text-white" data-filter="all">All</button>
+          <button class="filter-btn px-2 py-1 text-xs rounded-md bg-gray-800 text-gray-400 hover:text-white" data-filter="error">Errors</button>
+          <button class="filter-btn px-2 py-1 text-xs rounded-md bg-gray-800 text-gray-400 hover:text-white" data-filter="warning">Warnings</button>
+          <button class="filter-btn px-2 py-1 text-xs rounded-md bg-gray-800 text-gray-400 hover:text-white" data-filter="info">Info</button>
+        </div>
+
+        <!-- Search -->
+        <div class="px-4 py-2 border-b border-gray-800">
+          <input type="text" id="searchInput" placeholder="Search files..." class="w-full bg-bg-dark border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-300 focus:outline-none focus:border-accent-blue placeholder-gray-600" />
+        </div>
+
+        <!-- File List -->
+        <div class="flex-1 overflow-y-auto" id="fileList">
+          <div class="p-4 text-center text-gray-600 text-sm">Loading...</div>
+        </div>
+      </aside>
+
+      <!-- Main Panel -->
+      <main class="flex-1 flex flex-col overflow-hidden">
+        <!-- File Header -->
+        <div class="px-6 py-3 border-b border-gray-800 bg-bg-card flex items-center justify-between shrink-0" id="fileHeader" style="display:none">
+          <div>
+            <h2 class="text-sm font-semibold text-white mono" id="currentFileName"></h2>
+            <span class="text-xs text-gray-500" id="currentFileIssues"></span>
+          </div>
+          <div class="flex gap-2" id="severityToggles"></div>
+        </div>
+
+        <!-- Welcome / Code View -->
+        <div class="flex-1 overflow-auto" id="mainContent">
+          <div id="welcomeScreen" class="flex items-center justify-center h-full">
+            <div class="text-center">
+              <div class="w-16 h-16 rounded-2xl bg-accent-blue/10 flex items-center justify-center mx-auto mb-4">
+                <svg class="w-8 h-8 text-accent-blue" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
+              </div>
+              <h3 class="text-lg font-semibold text-white mb-2">Select a file to review</h3>
+              <p class="text-sm text-gray-500">Click any file in the sidebar to view its code and issues</p>
+            </div>
+          </div>
+          <div id="codeView" class="hidden">
+            <!-- Issues Panel -->
+            <div id="issuesPanel" class="border-b border-gray-800 bg-bg-card max-h-64 overflow-y-auto"></div>
+            <!-- Code -->
+            <div id="codePanel" class="overflow-auto">
+              <table class="w-full">
+                <tbody id="codeBody" class="mono text-sm"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    let DATA = null;
+    let currentFilter = 'all';
+    let currentFile = null;
+    let searchQuery = '';
+
+    // ── Fetch data ────────────────────────────────────────────────
+    async function loadData() {
+      const res = await fetch('/api/data');
+      DATA = await res.json();
+      render();
+    }
+
+    async function rescan() {
+      const project = DATA?.project || '';
+      if (!project) return;
+      document.getElementById('fileList').innerHTML = '<div class="p-4 text-center text-gray-500 text-sm">Scanning...</div>';
+      const res = await fetch(`/api/scan?project=${encodeURIComponent(project)}`);
+      DATA = await res.json();
+      currentFile = null;
+      render();
+    }
+
+    // ── Render ────────────────────────────────────────────────────
+    function render() {
+      if (!DATA) return;
+
+      // Header
+      document.getElementById('projectPath').textContent = DATA.project || '';
+      const langFw = [DATA.language, DATA.framework].filter(Boolean).join(' / ');
+      document.getElementById('langBadge').textContent = langFw;
+
+      // Stats
+      document.getElementById('errorCount').textContent = DATA.summary?.errors || 0;
+      document.getElementById('warnCount').textContent = DATA.summary?.warnings || 0;
+      document.getElementById('infoCount').textContent = DATA.summary?.infos || 0;
+
+      const dup = DATA.duplication || {};
+      const dupPct = dup.percentage || 0;
+      document.getElementById('dupPercent').textContent = dupPct + '%';
+      document.getElementById('dupBar').style.width = Math.min(dupPct, 100) + '%';
+      const dupBar = document.getElementById('dupBar');
+      dupBar.className = `h-full rounded-full transition-all ${dupPct > 10 ? 'bg-accent-red' : dupPct > 5 ? 'bg-accent-yellow' : 'bg-accent-green'}`;
+
+      renderFileList();
+
+      if (!currentFile) {
+        document.getElementById('welcomeScreen').classList.remove('hidden');
+        document.getElementById('codeView').classList.add('hidden');
+        document.getElementById('fileHeader').style.display = 'none';
+      }
+    }
+
+    function getFilteredViolations() {
+      if (!DATA?.violations) return [];
+      return DATA.violations.filter(v => {
+        if (currentFilter !== 'all' && v.severity !== currentFilter) return false;
+        return true;
+      });
+    }
+
+    function getFileViolationMap() {
+      const map = {};
+      const violations = getFilteredViolations();
+      for (const v of violations) {
+        if (!map[v.file_path]) map[v.file_path] = { errors: 0, warnings: 0, infos: 0, total: 0, violations: [] };
+        map[v.file_path].total++;
+        map[v.file_path].violations.push(v);
+        if (v.severity === 'error') map[v.file_path].errors++;
+        else if (v.severity === 'warning') map[v.file_path].warnings++;
+        else map[v.file_path].infos++;
+      }
+      return map;
+    }
+
+    function renderFileList() {
+      const container = document.getElementById('fileList');
+      const fileMap = getFileViolationMap();
+      const projectBase = (DATA.project || '').replace(/\\/g, '/');
+
+      // Get all files with issues, sorted by error count
+      let entries = Object.entries(fileMap).sort((a, b) => b[1].errors - a[1].errors || b[1].total - a[1].total);
+
+      // Apply search filter
+      if (searchQuery) {
+        entries = entries.filter(([path]) => path.toLowerCase().includes(searchQuery.toLowerCase()));
+      }
+
+      if (entries.length === 0) {
+        container.innerHTML = `
+          <div class="p-6 text-center">
+            <div class="text-accent-green text-3xl mb-2">&#10003;</div>
+            <div class="text-sm text-gray-400">${currentFilter === 'all' ? 'No issues found!' : 'No ' + currentFilter + ' issues'}</div>
+          </div>`;
+        return;
+      }
+
+      container.innerHTML = entries.map(([filePath, info]) => {
+        const shortPath = filePath.replace(/\\/g, '/').replace(projectBase + '/', '').replace(projectBase, '');
+        const parts = shortPath.split('/');
+        const fileName = parts.pop();
+        const dir = parts.join('/');
+        const isActive = currentFile === filePath;
+
+        return `
+          <div class="sidebar-item px-4 py-2.5 cursor-pointer border-b border-gray-800/50 ${isActive ? 'active' : ''}"
+               onclick="selectFile('${filePath.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')">
+            <div class="flex items-center justify-between">
+              <div class="truncate pr-2">
+                ${dir ? `<span class="text-gray-600 text-xs">${dir}/</span><br/>` : ''}
+                <span class="text-sm text-gray-200">${fileName}</span>
+              </div>
+              <div class="flex gap-1 shrink-0">
+                ${info.errors ? `<span class="severity-badge bg-accent-red/20 text-accent-red">${info.errors}</span>` : ''}
+                ${info.warnings ? `<span class="severity-badge bg-accent-yellow/20 text-accent-yellow">${info.warnings}</span>` : ''}
+                ${info.infos ? `<span class="severity-badge bg-accent-blue/20 text-accent-blue">${info.infos}</span>` : ''}
+              </div>
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    async function selectFile(filePath) {
+      currentFile = filePath;
+      document.getElementById('welcomeScreen').classList.add('hidden');
+      document.getElementById('codeView').classList.remove('hidden');
+      document.getElementById('fileHeader').style.display = 'flex';
+
+      // Update active state in sidebar
+      renderFileList();
+
+      const projectBase = (DATA.project || '').replace(/\\/g, '/');
+      const shortPath = filePath.replace(/\\/g, '/').replace(projectBase + '/', '');
+      document.getElementById('currentFileName').textContent = shortPath;
+
+      // Fetch file source
+      const res = await fetch(`/api/file?path=${encodeURIComponent(filePath)}`);
+      const fileData = await res.json();
+      const lines = fileData.lines || [];
+
+      // Get violations for this file
+      const fileMap = getFileViolationMap();
+      const info = fileMap[filePath] || { violations: [], total: 0, errors: 0, warnings: 0, infos: 0 };
+
+      document.getElementById('currentFileIssues').textContent =
+        `${info.total} issue(s): ${info.errors} error(s), ${info.warnings} warning(s), ${info.infos} info(s)`;
+
+      // Build violation line map
+      const violationMap = {};
+      for (const v of info.violations) {
+        if (!violationMap[v.line_number]) violationMap[v.line_number] = [];
+        violationMap[v.line_number].push(v);
+      }
+
+      // Render issues panel
+      renderIssuesPanel(info.violations, filePath);
+
+      // Render code
+      renderCode(lines, violationMap);
+    }
+
+    function renderIssuesPanel(violations, filePath) {
+      const panel = document.getElementById('issuesPanel');
+      if (!violations.length) {
+        panel.innerHTML = '';
+        return;
+      }
+
+      const sorted = [...violations].sort((a, b) => {
+        const order = { error: 0, warning: 1, info: 2 };
+        return (order[a.severity] || 3) - (order[b.severity] || 3) || a.line_number - b.line_number;
+      });
+
+      panel.innerHTML = `
+        <div class="p-3">
+          <div class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 px-2">Issues in this file</div>
+          ${sorted.map(v => {
+            const colors = { error: 'red', warning: 'yellow', info: 'blue' };
+            const c = colors[v.severity] || 'blue';
+            const icons = { error: '&#10006;', warning: '&#9888;', info: '&#8505;' };
+            return `
+              <div class="fade-in flex items-start gap-3 px-3 py-2 rounded-lg hover:bg-bg-hover cursor-pointer mb-1"
+                   onclick="scrollToLine(${v.line_number})">
+                <span class="severity-badge bg-accent-${c}/20 text-accent-${c} mt-0.5 shrink-0">${v.severity}</span>
+                <div class="min-w-0">
+                  <div class="text-sm text-gray-200">
+                    <span class="mono text-accent-${c} font-medium">${v.rule_id}</span>
+                    <span class="text-gray-400 mx-1">L${v.line_number}</span>
+                    ${v.message}
+                  </div>
+                  ${v.fix_suggestion ? `<div class="text-xs text-gray-500 mt-1">Fix: ${v.fix_suggestion}</div>` : ''}
+                </div>
+              </div>`;
+          }).join('')}
+        </div>`;
+    }
+
+    function renderCode(lines, violationMap) {
+      const tbody = document.getElementById('codeBody');
+      const maxLineNum = lines.length;
+      const gutterWidth = String(maxLineNum).length;
+
+      tbody.innerHTML = lines.map((line, i) => {
+        const lineNum = i + 1;
+        const violations = violationMap[lineNum];
+        let highlightClass = '';
+        if (violations) {
+          const hasSev = s => violations.some(v => v.severity === s);
+          if (hasSev('error')) highlightClass = 'highlighted';
+          else if (hasSev('warning')) highlightClass = 'highlighted-warn';
+          else highlightClass = 'highlighted-info';
+        }
+
+        const escapedLine = escapeHtml(line || ' ');
+
+        let row = `
+          <tr class="code-line ${highlightClass}" id="line-${lineNum}">
+            <td class="text-right pr-4 pl-4 py-0 text-gray-600 select-none align-top whitespace-nowrap" style="min-width:${gutterWidth + 2}ch">${lineNum}</td>
+            <td class="pr-8 py-0 whitespace-pre text-gray-300">${escapedLine}</td>
+          </tr>`;
+
+        // Inline violation annotations
+        if (violations) {
+          for (const v of violations) {
+            const colors = { error: 'red', warning: 'yellow', info: 'blue' };
+            const c = colors[v.severity] || 'blue';
+            row += `
+              <tr class="bg-accent-${c}/5">
+                <td class="text-right pr-4 pl-4 py-0 align-top">
+                  <span class="severity-badge bg-accent-${c}/20 text-accent-${c}">${v.severity[0].toUpperCase()}</span>
+                </td>
+                <td class="pr-8 py-1 text-xs">
+                  <span class="text-accent-${c} font-medium">${v.rule_id}:</span>
+                  <span class="text-gray-400">${escapeHtml(v.message)}</span>
+                  ${v.fix_suggestion ? `<span class="text-gray-600 ml-2">| Fix: ${escapeHtml(v.fix_suggestion)}</span>` : ''}
+                </td>
+              </tr>`;
+          }
+        }
+        return row;
+      }).join('');
+    }
+
+    function scrollToLine(lineNum) {
+      const el = document.getElementById('line-' + lineNum);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('ring-1', 'ring-accent-blue');
+        setTimeout(() => el.classList.remove('ring-1', 'ring-accent-blue'), 2000);
+      }
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    // ── Event Handlers ────────────────────────────────────────────
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.filter-btn').forEach(b => {
+          b.classList.remove('active', 'bg-gray-700/50', 'text-white');
+          b.classList.add('bg-gray-800', 'text-gray-400');
+        });
+        btn.classList.add('active', 'bg-gray-700/50', 'text-white');
+        btn.classList.remove('bg-gray-800', 'text-gray-400');
+        currentFilter = btn.dataset.filter;
+        renderFileList();
+        if (currentFile) selectFile(currentFile);
+      });
+    });
+
+    document.getElementById('searchInput').addEventListener('input', (e) => {
+      searchQuery = e.target.value;
+      renderFileList();
+    });
+
+    // ── Init ──────────────────────────────────────────────────────
+    loadData();
+  </script>
+</body>
+</html>

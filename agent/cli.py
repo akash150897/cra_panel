@@ -162,6 +162,27 @@ Usage: python main.py setup
 Interactive setup wizard for team leads to configure the project
 on the remote server (team settings, rule preferences, etc.).
 """.strip(),
+
+    "dashboard": """
+Usage: cra dashboard [OPTIONS]
+
+Launch a web-based dashboard (like SonarQube) to browse review results.
+Opens http://localhost:9090 in your browser with an interactive UI
+showing violations per file, inline code highlighting, severity filters,
+duplication stats, and more.
+
+Options:
+  --dir PATH        Project directory to scan (default: current directory)
+  --port PORT       Server port (default: 9090)
+  --lang LANG       Override language detection
+  --framework FW    Override framework detection
+  --no-open         Don't auto-open the browser
+
+Examples:
+  cra dashboard
+  cra dashboard --dir /path/to/project
+  cra dashboard --port 8080
+""".strip(),
 }
 
 
@@ -180,6 +201,7 @@ Usage:
   python main.py fix     [--dir PATH] [--lang LANG] [--unsafe-fixes] [FILE ...]
   python main.py baseline save [--dir PATH]
   python main.py report   [--dir PATH] [--lang LANG]
+  python main.py dashboard [--dir PATH] [--port PORT]
 
 Options:
   --staged          Review only git-staged files (pre-commit mode)
@@ -464,6 +486,35 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
         path = generate_report_file(result, project_dir, lang)
         print(f"[INFO] Report generated with {len(result.violations)} violation(s): {path}")
         return 0
+
+    # ── dashboard ────────────────────────────────────────────────────────
+    elif command == "dashboard":
+        from agent.dashboard.server import run_dashboard
+
+        import os
+        project_dir = None
+        port = 9090
+        language = None
+        framework = None
+        no_open = "--no-open" in args
+
+        for i, a in enumerate(args):
+            if a == "--dir" and i + 1 < len(args):
+                project_dir = args[i + 1]
+            elif a == "--port" and i + 1 < len(args):
+                try:
+                    port = int(args[i + 1])
+                except ValueError:
+                    print("[ERROR] --port must be a number")
+                    return 2
+            elif a == "--lang" and i + 1 < len(args):
+                language = args[i + 1]
+            elif a == "--framework" and i + 1 < len(args):
+                framework = args[i + 1]
+
+        project_dir = project_dir or os.getcwd()
+        return run_dashboard(project_dir, port=port, language=language,
+                             framework=framework, no_open=no_open)
 
     # ── setup-key ────────────────────────────────────────────────────────
     elif command == "setup-key":

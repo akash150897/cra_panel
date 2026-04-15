@@ -9,7 +9,7 @@ _README = (Path(__file__).parent / "README.md").read_text(encoding="utf-8") if (
 
 setup(
     name="code-review-agent",
-    version="1.7.0",
+    version="1.8.0",
     description="Intelligent Python-based git pre-push code review agent",
     long_description=_README,
     long_description_content_type="text/markdown",
@@ -23,6 +23,9 @@ setup(
             "rules_data/javascript/*.json",
             "rules_data/typescript/*.json",
             "ai/ai_checks.yaml",
+            "dashboard/static/*.html",
+            "dashboard/static/*.css",
+            "dashboard/static/*.js",
         ],
     },
     include_package_data=True,

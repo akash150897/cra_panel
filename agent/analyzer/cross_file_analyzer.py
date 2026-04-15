@@ -48,7 +48,7 @@ def _extract_function_blocks_python(content: str) -> List[Tuple[str, int, str]]:
         end = node.end_lineno if hasattr(node, "end_lineno") and node.end_lineno else start + 1
         body_lines = lines[start:end]
         body_text = _normalise_source("\n".join(body_lines))
-        if len(body_text) < 80:  # skip trivial functions
+        if len(body_text) < 30:  # skip trivial functions (getters, one-liners)
             continue
         body_hash = hashlib.md5(body_text.encode()).hexdigest()
         blocks.append((node.name, node.lineno, body_hash))
@@ -77,7 +77,7 @@ def _extract_function_blocks_js(content: str) -> List[Tuple[str, int, str]]:
                 body_end = j + 1
                 break
         body_text = _normalise_source("\n".join(lines[i:body_end]))
-        if len(body_text) < 80:
+        if len(body_text) < 30:
             continue
         body_hash = hashlib.md5(body_text.encode()).hexdigest()
         blocks.append((name, i + 1, body_hash))
@@ -110,7 +110,7 @@ def _extract_code_blocks_python(content: str) -> List[Tuple[str, int, str]]:
                 continue
             body_lines = lines[start:end]
             body_text = _normalise_source("\n".join(body_lines))
-            if len(body_text) < 60:
+            if len(body_text) < 30:
                 continue
             body_hash = hashlib.md5(body_text.encode()).hexdigest()
             label = f"{type(node).__name__}@L{node.lineno}"
@@ -139,7 +139,7 @@ def _extract_code_blocks_js(content: str) -> List[Tuple[str, int, str]]:
         if body_end - i < 5:
             continue
         body_text = _normalise_source("\n".join(lines[i:body_end]))
-        if len(body_text) < 60:
+        if len(body_text) < 30:
             continue
         body_hash = hashlib.md5(body_text.encode()).hexdigest()
         label = f"{m.group(1)}@L{i + 1}"
@@ -195,7 +195,7 @@ def _extract_blocks_with_spans_python(content: str) -> List[Tuple[str, int, int,
             start = node.lineno
             end = node.end_lineno if hasattr(node, "end_lineno") and node.end_lineno else start
             body_text = _normalise_source("\n".join(lines[start - 1:end]))
-            if len(body_text) < 80:
+            if len(body_text) < 30:
                 continue
             body_hash = hashlib.md5(body_text.encode()).hexdigest()
             blocks.append((node.name, start, end, body_hash))
@@ -205,7 +205,7 @@ def _extract_blocks_with_spans_python(content: str) -> List[Tuple[str, int, int,
             if end - start < 5:
                 continue
             body_text = _normalise_source("\n".join(lines[start - 1:end]))
-            if len(body_text) < 60:
+            if len(body_text) < 30:
                 continue
             body_hash = hashlib.md5(body_text.encode()).hexdigest()
             blocks.append((f"{type(node).__name__}@L{start}", start, end, body_hash))
@@ -234,7 +234,7 @@ def _extract_blocks_with_spans_js(content: str) -> List[Tuple[str, int, int, str
                 body_end = j + 1
                 break
         body_text = _normalise_source("\n".join(lines[i:body_end]))
-        if len(body_text) < 80:
+        if len(body_text) < 30:
             continue
         body_hash = hashlib.md5(body_text.encode()).hexdigest()
         blocks.append((name, i + 1, body_end, body_hash))
@@ -255,7 +255,7 @@ def _extract_blocks_with_spans_js(content: str) -> List[Tuple[str, int, int, str
         if body_end - i < 5:
             continue
         body_text = _normalise_source("\n".join(lines[i:body_end]))
-        if len(body_text) < 60:
+        if len(body_text) < 30:
             continue
         body_hash = hashlib.md5(body_text.encode()).hexdigest()
         blocks.append((f"{m.group(1)}@L{i + 1}", i + 1, body_end, body_hash))

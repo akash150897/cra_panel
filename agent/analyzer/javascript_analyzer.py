@@ -72,6 +72,8 @@ class JavaScriptAnalyzer(BaseAnalyzer):
         "no_dangerously_set_innerhtml": "_check_dangerously_set_innerhtml",
         "async_without_try_catch": "_check_async_without_try_catch",
         "no_unused_imports_js": "_check_unused_imports",
+        "no_unused_variables_js": "_check_unused_variables",
+        "no_duplicate_declarations_js": "_check_duplicate_declarations",
     }
 
     def run_ast_check(
@@ -525,4 +527,96 @@ class JavaScriptAnalyzer(BaseAnalyzer):
                             snippet=line,
                         )
                     )
+        return violations
+
+    # ── Unused variables ──────────────────────────────────────────────
+    _DECL_RE = re.compile(
+        r'\b(?:const|let|var)\s+'
+        r'(?:\{([^}]+)\}|(\w+))'        # destructured or simple name
+        r'\s*='
+    )
+
+    def _check_unused_variables(
+        self, file_path: str, content: str, rule: Dict[str, Any]
+    ) -> List[Violation]:
+        """Flag variables that are declared but never referenced elsewhere."""
+        violations: List[Violation] = []
+        lines = content.splitlines()
+
+        # Collect all declarations: (name, line_number, line_text)
+        declarations: List[Tuple[str, int, str]] = []
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if stripped.startswith("//") or stripped.startswith("*"):
+                continue
+            for m in self._DECL_RE.finditer(line):
+                # Destructured names
+                if m.group(1):
+                    for name in re.split(r'[,\s]+', m.group(1)):
+                        name = name.split(':')[0].strip()
+                        if name and name.isidentifier():
+                            declarations.append((name, i, line))
+                # Simple name
+                elif m.group(2):
+                    declarations.append((m.group(2), i, line))
+
+        # Check each declaration for usage elsewhere
+        for name, line_num, line_text in declarations:
+            pattern = re.compile(r'\b' + re.escape(name) + r'\b')
+            used = False
+            for j, other_line in enumerate(lines, 1):
+                if j == line_num:
+                    continue
+                if pattern.search(other_line):
+                    used = True
+                    break
+            if not used:
+                violations.append(
+                    _make_violation(
+                        rule, file_path, line_num,
+                        message_override=(
+                            f"Variable '{name}' is declared but never used."
+                        ),
+                        snippet=line_text.strip(),
+                    )
+                )
+        return violations
+
+    # ── Duplicate declarations ────────────────────────────────────────
+    def _check_duplicate_declarations(
+        self, file_path: str, content: str, rule: Dict[str, Any]
+    ) -> List[Violation]:
+        """Flag variables/constants declared more than once with the same name."""
+        violations: List[Violation] = []
+        lines = content.splitlines()
+
+        seen: Dict[str, int] = {}  # name -> first line number
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if stripped.startswith("//") or stripped.startswith("*"):
+                continue
+            for m in self._DECL_RE.finditer(line):
+                names: List[str] = []
+                if m.group(1):
+                    for n in re.split(r'[,\s]+', m.group(1)):
+                        n = n.split(':')[0].strip()
+                        if n and n.isidentifier():
+                            names.append(n)
+                elif m.group(2):
+                    names.append(m.group(2))
+
+                for name in names:
+                    if name in seen:
+                        violations.append(
+                            _make_violation(
+                                rule, file_path, i,
+                                message_override=(
+                                    f"Variable '{name}' is already declared on line {seen[name]}. "
+                                    f"Duplicate declarations cause bugs or shadowing."
+                                ),
+                                snippet=stripped,
+                            )
+                        )
+                    else:
+                        seen[name] = i
         return violations

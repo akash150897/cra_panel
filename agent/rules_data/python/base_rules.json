@@ -321,6 +321,20 @@
       "file_extensions": [".py"],
       "exclude_file_patterns": ["test_*.py", "*_test.py"],
       "enabled": true
+    },
+    {
+      "id": "PY024",
+      "name": "no_duplicate_definitions_py",
+      "description": "Functions or classes defined more than once at the same scope level shadow the earlier definition",
+      "severity": "error",
+      "category": "correctness",
+      "type": "ast",
+      "ast_check": "duplicate_definitions_py",
+      "message": "Duplicate function/class definition detected.",
+      "fix_suggestion": "Remove the duplicate definition or rename one of them.",
+      "file_extensions": [".py"],
+      "exclude_file_patterns": ["test_*.py", "*_test.py"],
+      "enabled": true
     }
   ]
 }

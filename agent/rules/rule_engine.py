@@ -56,6 +56,9 @@ _AST_CHECKS = frozenset(
         "no_dangerously_set_innerhtml",
         "async_without_try_catch",
         "no_unused_imports_js",
+        "no_unused_variables_js",
+        "no_duplicate_declarations_js",
+        "duplicate_definitions_py",
     ]
 )
 

@@ -184,6 +184,34 @@
       "file_extensions": [".js", ".jsx", ".ts", ".tsx"],
       "exclude_file_patterns": ["*.test.*", "*.spec.*", "*.d.ts"],
       "enabled": true
+    },
+    {
+      "id": "JS014",
+      "name": "no_unused_variables_js",
+      "description": "Variables that are declared but never used are dead code",
+      "severity": "warning",
+      "category": "dead_code",
+      "type": "ast",
+      "ast_check": "no_unused_variables_js",
+      "message": "Unused variable detected. Remove it or use it.",
+      "fix_suggestion": "Delete the unused variable or reference it where needed.",
+      "file_extensions": [".js", ".jsx", ".ts", ".tsx"],
+      "exclude_file_patterns": ["*.test.*", "*.spec.*", "*.d.ts"],
+      "enabled": true
+    },
+    {
+      "id": "JS015",
+      "name": "no_duplicate_declarations_js",
+      "description": "Declaring the same variable name twice causes bugs or unintended shadowing",
+      "severity": "error",
+      "category": "correctness",
+      "type": "ast",
+      "ast_check": "no_duplicate_declarations_js",
+      "message": "Duplicate variable declaration detected.",
+      "fix_suggestion": "Remove the duplicate declaration or rename one of them.",
+      "file_extensions": [".js", ".jsx", ".ts", ".tsx"],
+      "exclude_file_patterns": ["*.test.*", "*.spec.*"],
+      "enabled": true
     }
   ]
 }

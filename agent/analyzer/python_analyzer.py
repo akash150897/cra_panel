@@ -63,6 +63,7 @@ class PythonAnalyzer(BaseAnalyzer):
         "empty_function_body": "_check_empty_function_body",
         "duplicate_strings_py": "_check_duplicate_strings",
         "cyclomatic_complexity": "_check_cyclomatic_complexity",
+        "duplicate_definitions_py": "_check_duplicate_definitions",
     }
 
     def run_ast_check(
@@ -852,4 +853,50 @@ class PythonAnalyzer(BaseAnalyzer):
                         snippet=snippet,
                     )
                 )
+        return violations
+
+    def _check_duplicate_definitions(
+        self,
+        tree: ast.AST,
+        file_path: str,
+        content: str,
+        lines: List[str],
+        rule: Dict[str, Any],
+    ) -> List[Violation]:
+        """Detect functions or classes defined more than once at the same scope level."""
+        violations: List[Violation] = []
+
+        def _scan_scope(body: List[ast.stmt]) -> None:
+            seen: Dict[str, int] = {}  # name → first line number
+            for node in body:
+                name: Optional[str] = None
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    name = node.name
+                elif isinstance(node, ast.ClassDef):
+                    name = node.name
+
+                if name is None:
+                    continue
+
+                if name in seen:
+                    snippet = lines[node.lineno - 1] if node.lineno <= len(lines) else ""
+                    kind = "Function" if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "Class"
+                    violations.append(
+                        _make_violation(
+                            rule, file_path, node.lineno,
+                            message_override=(
+                                f"{kind} '{name}' is already defined on line {seen[name]}. "
+                                f"Duplicate definitions shadow the earlier one."
+                            ),
+                            snippet=snippet,
+                        )
+                    )
+                else:
+                    seen[name] = node.lineno
+
+                # Recurse into nested scopes
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    _scan_scope(node.body)
+
+        _scan_scope(tree.body)
         return violations

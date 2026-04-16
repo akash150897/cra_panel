@@ -448,8 +448,9 @@
                     <p class="text-xs text-gray-600 mt-1">Main branch: ${p.main_branch}</p>
                   </div>
                   <div class="flex gap-2">
-                    <button onclick="viewProject(${p.id})" class="px-3 py-1 text-sm bg-gray-700 text-gray-300 rounded hover:bg-gray-600">View</button>
-                    <button onclick="assignUsers(${p.id})" class="px-3 py-1 text-sm bg-accent-blue/20 text-accent-blue rounded hover:bg-accent-blue/30">Assign</button>
+                    <button onclick="viewProject(${p.id}, '${p.name}', '${p.path}')" class="px-3 py-1 text-sm bg-gray-700 text-gray-300 rounded hover:bg-gray-600">View</button>
+                    <button onclick="assignUsers(${p.id})" class="px-3 py-1 text-sm bg-accent-purple text-white rounded hover:bg-purple-600">Assign</button>
+                    <button onclick="openProjectReview(${p.id}, '${p.path}')" class="px-3 py-1 text-sm bg-accent-blue text-white rounded hover:bg-blue-600">Review Code</button>
                   </div>
                 </div>
               </div>
@@ -1273,7 +1274,21 @@
 
     function setFilter(filter) {
       severityFilter = filter;
-      renderProjectReview(document.getElementById('contentPanel'), currentReviewData, 0, '');
+      // Re-render just the file tree, not the whole panel
+      const fileTree = buildFileTree(currentReviewData.files, currentReviewData.violations);
+      document.getElementById('fileTree').innerHTML = renderFileTree(fileTree);
+      // Update filter button styles
+      const buttons = document.querySelectorAll('#fileTree').parentElement.querySelectorAll('.filter-btn');
+      buttons.forEach(btn => {
+        const btnFilter = btn.textContent.toLowerCase();
+        if (btnFilter === filter || (filter === 'all' && btnFilter === 'all')) {
+          btn.classList.add('bg-gray-700', 'text-white');
+          btn.classList.remove('text-gray-400');
+        } else {
+          btn.classList.remove('bg-gray-700', 'text-white');
+          btn.classList.add('text-gray-400');
+        }
+      });
     }
 
     async function selectReviewFile(filePath) {

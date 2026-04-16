@@ -1138,7 +1138,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             result.violations.extend(test_violations)
             result.violations.extend(arch_violations)
             
-            print(f"[Scan] Duplication stats: {dup_stats.duplicated_lines} / {dup_stats.total_lines} lines ({dup_stats.duplication_percentage:.1f}%)")
+            print(f"[Scan] Duplication stats: {dup_stats.duplicated_lines} / {dup_stats.total_lines} lines ({dup_stats.percentage:.1f}%)")
             
             # Run ESLint for JS/TS projects to catch linting issues
             eslint_violations = []
@@ -1233,7 +1233,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "total": len(violations)
                 },
                 "duplication": {
-                    "percentage": dup_stats.duplication_percentage,
+                    "percentage": dup_stats.percentage,
                     "duplicated_lines": dup_stats.duplicated_lines,
                     "total_lines": dup_stats.total_lines
                 }

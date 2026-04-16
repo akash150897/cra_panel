@@ -8,7 +8,9 @@
       "Bash(python -m unittest discover tests/ -v)",
       "Bash(python -c \"import py_compile; py_compile.compile\\('agent/dashboard/server.py', doraise=True\\); print\\('OK'\\)\")",
       "Bash(python -m unittest discover tests/ -q)",
-      "Bash(python -m unittest discover tests/)"
+      "Bash(python -m unittest discover tests/)",
+      "Bash(python -c \"from agent.dashboard.server import run_dashboard; import inspect; sig = inspect.signature\\(run_dashboard\\); print\\('run_dashboard params:', list\\(sig.parameters.keys\\(\\)\\)\\)\")",
+      "Bash(python -c \"from agent.database.db_manager import DatabaseManager; import inspect; sig = inspect.signature\\(DatabaseManager.create_access_request\\); print\\('create_access_request params:', list\\(sig.parameters.keys\\(\\)\\)\\)\")"
     ]
   }
 }

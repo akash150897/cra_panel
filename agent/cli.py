@@ -527,10 +527,12 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
         from agent.dashboard.server import run_dashboard
 
         import os
+        import subprocess as _sp
         project_dir = None
         port = 9090
         language = None
         framework = None
+        branch = None
         no_open = "--no-open" in args
 
         for i, a in enumerate(args):
@@ -546,10 +548,38 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
                 language = args[i + 1]
             elif a == "--framework" and i + 1 < len(args):
                 framework = args[i + 1]
+            elif a == "--branch" and i + 1 < len(args):
+                branch = args[i + 1]
 
         project_dir = project_dir or os.getcwd()
+
+        # Auto-detect git branch if not specified and we're inside a git repo
+        if not branch:
+            try:
+                _r = _sp.run(
+                    ["git", "-C", project_dir, "rev-parse", "--abbrev-ref", "HEAD"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if _r.returncode == 0 and _r.stdout.strip():
+                    branch = _r.stdout.strip()
+            except Exception:
+                pass
+
+        # Auto-detect git remote URL for project matching
+        repo_url = None
+        try:
+            _r = _sp.run(
+                ["git", "-C", project_dir, "config", "--get", "remote.origin.url"],
+                capture_output=True, text=True, timeout=5
+            )
+            if _r.returncode == 0 and _r.stdout.strip():
+                repo_url = _r.stdout.strip()
+        except Exception:
+            pass
+
         return run_dashboard(project_dir, port=port, language=language,
-                             framework=framework, no_open=no_open, mode='developer')
+                             framework=framework, no_open=no_open, mode='developer',
+                             branch=branch, repo_url=repo_url)
 
     # ── admin ───────────────────────────────────────────────────────────
     elif command == "admin":

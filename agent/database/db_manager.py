@@ -76,6 +76,7 @@ class DatabaseManager:
                         requester_email VARCHAR(255) NOT NULL,
                         requester_name VARCHAR(255) NOT NULL,
                         tl_email VARCHAR(255) NOT NULL,
+                        project_id INTEGER REFERENCES projects(id),
                         status VARCHAR(50) DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
                         requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         responded_at TIMESTAMP,
@@ -83,6 +84,15 @@ class DatabaseManager:
                         notes TEXT
                     )
                 """)
+
+                # Migration: Add project_id column if it doesn't exist
+                try:
+                    cur.execute("""
+                        ALTER TABLE access_requests
+                        ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id)
+                    """)
+                except Exception:
+                    pass
 
                 # Analytics data (commits, issues, etc.)
                 cur.execute("""
@@ -301,36 +311,40 @@ class DatabaseManager:
             print(f"[DB Error] remove_user_from_project: {e}")
             return False
 
-    def create_access_request(self, requester_email: str, requester_name: str, tl_email: str) -> bool:
-        """Create an access request from developer."""
+    def create_access_request(self, requester_email: str, requester_name: str,
+                              tl_email: str, project_id: Optional[int] = None) -> bool:
+        """Create an access request from developer, optionally for a specific project."""
         try:
             with self.connect() as conn:
                 with conn.cursor() as cur:
                     cur.execute("""
-                        INSERT INTO access_requests (requester_email, requester_name, tl_email)
-                        VALUES (%s, %s, %s)
-                        ON CONFLICT DO NOTHING
-                    """, (requester_email, requester_name, tl_email))
+                        INSERT INTO access_requests (requester_email, requester_name, tl_email, project_id)
+                        VALUES (%s, %s, %s, %s)
+                    """, (requester_email, requester_name, tl_email, project_id))
                     conn.commit()
                     return True
         except Exception:
             return False
 
     def get_pending_access_requests(self, tl_email: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get pending access requests."""
+        """Get pending access requests with optional project info."""
         with self.connect() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 if tl_email:
                     cur.execute("""
-                        SELECT * FROM access_requests
-                        WHERE tl_email = %s AND status = 'pending'
-                        ORDER BY requested_at DESC
+                        SELECT ar.*, p.name as project_name
+                        FROM access_requests ar
+                        LEFT JOIN projects p ON ar.project_id = p.id
+                        WHERE ar.tl_email = %s AND ar.status = 'pending'
+                        ORDER BY ar.requested_at DESC
                     """, (tl_email,))
                 else:
                     cur.execute("""
-                        SELECT * FROM access_requests
-                        WHERE status = 'pending'
-                        ORDER BY requested_at DESC
+                        SELECT ar.*, p.name as project_name
+                        FROM access_requests ar
+                        LEFT JOIN projects p ON ar.project_id = p.id
+                        WHERE ar.status = 'pending'
+                        ORDER BY ar.requested_at DESC
                     """)
                 return [dict(row) for row in cur.fetchall()]
 

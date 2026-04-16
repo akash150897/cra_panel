@@ -24,6 +24,9 @@ _STATIC_DIR = Path(__file__).parent / "static"
 _mode: str = "developer"  # 'admin' or 'developer'
 _current_user: Optional[Dict[str, Any]] = None
 
+# Launch context: set when dashboard is opened from a project directory
+_launch_context: Dict[str, Any] = {}  # {project_dir, branch, repo_url}
+
 # Global store for the latest scan results (populated by /api/scan or pre-loaded)
 _scan_result: Dict[str, Any] = {}
 _scan_lock = threading.Lock()
@@ -252,6 +255,72 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._json_response({"mode": _mode})
             return
 
+        # Get launch context (project dir, branch, repo URL set at startup)
+        if path == "/api/launch-context":
+            self._json_response(_launch_context)
+            return
+
+        # Match a registered project by path or repo URL (authenticated)
+        if path == "/api/match-project":
+            if not _current_user:
+                self._json_response({"error": "Unauthorized"}, 401)
+                return
+            qs = parse_qs(parsed.query)
+            search_path = qs.get("path", [None])[0]
+            search_url = qs.get("repo_url", [None])[0]
+            if not search_path and not search_url:
+                self._json_response({"error": "path or repo_url required"}, 400)
+                return
+            try:
+                db = _get_db()
+                projects = db.get_all_projects()
+                matched = None
+
+                # Normalize for comparison
+                def _norm(s):
+                    return (s or "").rstrip("/").rstrip(".git").replace("\\", "/").lower()
+
+                for p in projects:
+                    p_path = _norm(p["path"])
+                    if search_url and _norm(search_url) == p_path:
+                        matched = p
+                        break
+                    if search_path and _norm(search_path) == p_path:
+                        matched = p
+                        break
+                    # Also check if the project path ends with the search dir name
+                    if search_path:
+                        dir_name = _norm(search_path).rstrip("/").split("/")[-1]
+                        if dir_name and p_path.endswith("/" + dir_name):
+                            matched = p
+                            break
+
+                if matched:
+                    # Check if the user is assigned to this project
+                    user_projects = db.get_user_projects(_current_user["email"])
+                    is_assigned = any(up["id"] == matched["id"] for up in user_projects)
+
+                    # Get TLs assigned to this project for access request
+                    tls_on_project = []
+                    if not is_assigned:
+                        assignments = db.get_project_assignments(matched["id"])
+                        tls_on_project = [
+                            {"email": a["email"], "name": a["name"]}
+                            for a in assignments if a.get("role_on_project") == "tl" or a.get("user_role") == "admin"
+                        ]
+
+                    self._json_response({
+                        "found": True,
+                        "project": matched,
+                        "is_assigned": is_assigned,
+                        "tls_on_project": tls_on_project
+                    })
+                else:
+                    self._json_response({"found": False})
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
+
         # Get git email from system
         if path == "/api/git-email":
             try:
@@ -295,13 +364,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._json_response({"error": str(e)}, 500)
             return
 
-        # Get all users (super admin only)
+        # Get all users (super admin and TL only)
         if path == "/api/users":
             if not _current_user:
                 self._json_response({"error": "Unauthorized"}, 401)
                 return
-            if _current_user.get("role") != "super_admin":
-                self._json_response({"error": "Forbidden: super admin only"}, 403)
+            if _current_user.get("role") not in ("super_admin", "admin"):
+                self._json_response({"error": "Forbidden: admin access required"}, 403)
                 return
             try:
                 db = _get_db()
@@ -701,14 +770,22 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._json_response({"error": str(e)}, 500)
             return
 
-        # Create access request
+        # Create access request (optionally for a specific project)
         if path == "/api/access-requests":
             try:
                 db = _get_db()
+                # project_id is optional — if provided, the request is for a specific project
+                project_id = data.get("project_id")
+                if project_id is not None:
+                    try:
+                        project_id = int(project_id)
+                    except (ValueError, TypeError):
+                        project_id = None
                 success = db.create_access_request(
                     data.get("requester_email"),
                     data.get("requester_name"),
-                    data.get("tl_email")
+                    data.get("tl_email"),
+                    project_id
                 )
 
                 # Send email notification to TL
@@ -1460,7 +1537,9 @@ def run_dashboard(project_dir: Optional[str] = None, port: int = 9090,
                   language: Optional[str] = None,
                   framework: Optional[str] = None,
                   no_open: bool = False,
-                  mode: str = 'developer') -> int:
+                  mode: str = 'developer',
+                  branch: Optional[str] = None,
+                  repo_url: Optional[str] = None) -> int:
     """Run the dashboard server.
 
     Args:
@@ -1470,14 +1549,23 @@ def run_dashboard(project_dir: Optional[str] = None, port: int = 9090,
         framework: Override framework detection
         no_open: Don't auto-open browser
         mode: 'developer' for normal dashboard, 'admin' for multi-user admin panel
+        branch: Git branch (auto-detected from cwd if not given)
+        repo_url: Git remote origin URL (auto-detected from cwd if not given)
 
     For multi-user mode:
         1. Initialize database
         2. Start HTTP server
         3. User logs in via web UI
     """
-    global _scan_result, _mode, _current_user
+    global _scan_result, _mode, _current_user, _launch_context
     _mode = mode
+
+    # Store launch context so the frontend can auto-navigate
+    _launch_context = {
+        "project_dir": project_dir,
+        "branch": branch,
+        "repo_url": repo_url,
+    }
 
     if mode in ('admin', 'developer'):
         # Multi-user mode - initialize database

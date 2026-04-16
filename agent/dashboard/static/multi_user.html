@@ -237,6 +237,17 @@
           </button>
           <h2 class="text-base font-bold text-white">Request Access</h2>
         </div>
+        <!-- Project context banner (shown when opened from a project dir) -->
+        <div id="reqProjectBanner" class="hidden mb-3 p-3 bg-accent-blue/5 border border-accent-blue/20 rounded-xl">
+          <div class="flex items-center gap-2">
+            <svg class="w-4 h-4 text-accent-blue shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+            <div>
+              <div class="text-xs font-medium text-white" id="reqProjectName"></div>
+              <div class="text-[10px] text-gray-500" id="reqProjectBranch"></div>
+            </div>
+          </div>
+          <input type="hidden" id="reqProjectId" value="" />
+        </div>
         <div class="mb-3">
           <label class="block text-xs font-medium text-gray-400 mb-1.5">Your Name</label>
           <input type="text" id="reqName" class="w-full bg-bg-dark border border-border-subtle rounded-lg px-4 py-2.5 text-sm text-white search-input" placeholder="Your name" />
@@ -286,6 +297,7 @@
     let currentRole = null;
     let currentView = 'dashboard';
     let allTLs = [];
+    let launchContext = null; // {project_dir, branch, repo_url} set when opened from a project dir
 
     // ── Utility: Avatar ──────────────────────────────────────────
     function getInitials(name) {
@@ -396,12 +408,36 @@
       document.getElementById('reqEmail').value = email;
       const gitName = await getGitName();
       if (gitName) document.getElementById('reqName').value = gitName;
+
+      // Check if we have a launch context (opened from a project dir)
+      try {
+        const ctxRes = await fetch('/api/launch-context');
+        const ctx = await ctxRes.json();
+        if (ctx && (ctx.project_dir || ctx.repo_url)) {
+          // Try to find the matching project in the system
+          const params = new URLSearchParams();
+          if (ctx.repo_url) params.set('repo_url', ctx.repo_url);
+          if (ctx.project_dir) params.set('path', ctx.project_dir);
+          // We can't use /api/match-project since user isn't logged in.
+          // But we can show the project dir/branch info from the context.
+          const banner = document.getElementById('reqProjectBanner');
+          const dirName = (ctx.project_dir || ctx.repo_url || '').split(/[\\/]/).pop().replace('.git','');
+          document.getElementById('reqProjectName').textContent = dirName || 'Unknown project';
+          document.getElementById('reqProjectBranch').textContent = ctx.branch ? `Branch: ${ctx.branch}` : (ctx.repo_url || ctx.project_dir || '');
+          banner.classList.remove('hidden');
+          // We won't set reqProjectId here since we can't match without auth
+          // The project_id will be empty; TL will assign manually after approval
+        }
+      } catch (e) { /* ignore */ }
+
       document.querySelectorAll('.login-panel').forEach(p => p.classList.add('hidden'));
       document.getElementById('requestAccessForm').classList.remove('hidden');
     }
 
     function hideRequestForm() {
       document.getElementById('requestAccessForm').classList.add('hidden');
+      document.getElementById('reqProjectBanner').classList.add('hidden');
+      document.getElementById('reqProjectId').value = '';
       document.getElementById('devNotRegistered').classList.add('hidden');
       document.getElementById('devLoginForm').classList.remove('hidden');
     }
@@ -410,11 +446,14 @@
       const name = document.getElementById('reqName').value;
       const email = document.getElementById('reqEmail').value;
       const tlEmail = document.getElementById('reqTLEmail').value;
+      const projectId = document.getElementById('reqProjectId').value || null;
       if (!name || !email || !tlEmail) { showNotification('Please fill all fields', 'warning'); return; }
       try {
+        const payload = { requester_name: name, requester_email: email, tl_email: tlEmail };
+        if (projectId) payload.project_id = parseInt(projectId);
         const res = await fetch('/api/access-requests', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ requester_name: name, requester_email: email, tl_email: tlEmail })
+          body: JSON.stringify(payload)
         });
         const data = await res.json();
         if (data.success) {
@@ -429,14 +468,143 @@
     function logout() { currentUser = null; currentRole = null; location.reload(); }
 
     // ── Initialize Dashboard ────────────────────────────────────
-    function initDashboard() {
+    async function initDashboard() {
       document.getElementById('userAvatar').className = `avatar avatar-sm ${avatarColor(currentUser.name)} text-white`;
       document.getElementById('userAvatar').textContent = getInitials(currentUser.name);
       document.getElementById('userDisplayName').textContent = currentUser.name;
       const roleLabels = { super_admin: 'Super Admin', admin: 'Team Lead', developer: 'Developer' };
       document.getElementById('userDisplayRole').textContent = roleLabels[currentRole] || currentRole;
       renderNav();
-      loadView('dashboard');
+
+      // Check if dashboard was launched from a project directory
+      try {
+        const ctxRes = await fetch('/api/launch-context');
+        launchContext = await ctxRes.json();
+      } catch (e) { launchContext = {}; }
+
+      if (launchContext && (launchContext.project_dir || launchContext.repo_url)) {
+        // Try to match this directory/URL to a registered project
+        await handleLaunchContext();
+      } else {
+        loadView('dashboard');
+      }
+    }
+
+    // ── Handle Launch Context (auto-navigate to project scan) ───
+    async function handleLaunchContext() {
+      const panel = document.getElementById('contentPanel');
+      panel.innerHTML = `<div class="flex flex-col items-center justify-center h-full"><div class="w-8 h-8 border-2 border-accent-blue border-t-transparent rounded-full animate-spin mb-3"></div><p class="text-sm text-gray-400">Detecting project...</p></div>`;
+
+      try {
+        const params = new URLSearchParams();
+        if (launchContext.repo_url) params.set('repo_url', launchContext.repo_url);
+        if (launchContext.project_dir) params.set('path', launchContext.project_dir);
+
+        const res = await fetch(`/api/match-project?${params.toString()}`);
+        const data = await res.json();
+
+        if (data.found && data.is_assigned) {
+          // User is assigned to this project — auto-open scan
+          showNotification(`Opening ${data.project.name} (${launchContext.branch || 'default branch'})`, 'info');
+          if (launchContext.branch) {
+            // Scan specific branch
+            const scanPanel = document.getElementById('contentPanel');
+            scanPanel.innerHTML = `<div class="flex flex-col items-center justify-center h-full"><div class="w-10 h-10 border-3 border-accent-blue border-t-transparent rounded-full animate-spin mb-3"></div><p class="text-sm text-gray-400">Scanning branch: ${launchContext.branch}...</p><p class="text-xs text-gray-600 mt-1">${data.project.name}</p></div>`;
+            const scanRes = await fetch(`/api/scan-project/${data.project.id}?branch=${encodeURIComponent(launchContext.branch)}&t=${Date.now()}`);
+            const result = await scanRes.json();
+            if (result.success) {
+              renderProjectReview(scanPanel, result, data.project.id, data.project.path);
+              await fetchProjectBranches(data.project.id, launchContext.branch);
+            } else {
+              showNotification('Scan failed: ' + (result.error || 'Unknown'), 'error');
+              loadView('dashboard');
+            }
+          } else {
+            openProjectReview(data.project.id, data.project.path);
+          }
+        } else if (data.found && !data.is_assigned) {
+          // Project exists but user is NOT assigned — show request access
+          showProjectAccessRequest(data.project, data.tls_on_project);
+        } else {
+          // No matching project found — just show normal dashboard
+          loadView('dashboard');
+        }
+      } catch (e) {
+        console.error('Launch context error:', e);
+        loadView('dashboard');
+      }
+    }
+
+    // ── Show "Request Access to Project" view ───────────────────
+    function showProjectAccessRequest(project, tlsOnProject) {
+      const panel = document.getElementById('contentPanel');
+      const allTLsList = tlsOnProject.length > 0 ? tlsOnProject : allTLs;
+
+      panel.innerHTML = `
+        <div class="flex items-center justify-center h-full">
+          <div class="card p-8 max-w-lg w-full text-center scale-in">
+            <div class="w-14 h-14 rounded-2xl bg-accent-yellow/10 flex items-center justify-center mx-auto mb-4">
+              <svg class="w-7 h-7 text-accent-yellow" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+            </div>
+            <h3 class="text-lg font-bold text-white mb-1">Access Required</h3>
+            <p class="text-sm text-gray-400 mb-2">You are not assigned to this project:</p>
+            <div class="bg-bg-dark rounded-xl p-4 mb-5 text-left">
+              <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-accent-blue/10 flex items-center justify-center shrink-0">
+                  <svg class="w-5 h-5 text-accent-blue" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+                </div>
+                <div>
+                  <div class="font-semibold text-white text-sm">${project.name}</div>
+                  <div class="text-xs text-gray-500 mono truncate">${project.path}</div>
+                  ${launchContext.branch ? `<div class="text-xs text-accent-blue mt-0.5">Branch: ${launchContext.branch}</div>` : ''}
+                </div>
+              </div>
+            </div>
+            <div class="text-left mb-5" id="projectAccessRequestForm">
+              <label class="block text-xs font-medium text-gray-400 mb-1.5">Request access from a Team Lead</label>
+              <select id="projectReqTL" class="w-full search-input rounded-lg px-4 py-2.5 text-sm text-white mb-3">
+                ${allTLsList.length === 0 ? '<option value="">No TLs assigned to this project</option>' :
+                  '<option value="">Select a TL...</option>' + allTLsList.map(tl => `<option value="${tl.email}">${tl.name} (${tl.email})</option>`).join('')}
+              </select>
+              <button onclick="submitProjectAccessRequest(${project.id})" class="btn w-full gradient-blue text-white font-medium py-2.5 rounded-lg hover:opacity-90 text-sm shadow-lg shadow-blue-500/20" ${allTLsList.length === 0 ? 'disabled' : ''}>
+                Request Access
+              </button>
+            </div>
+            <div id="projectAccessSuccess" class="hidden">
+              <div class="flex items-center justify-center gap-2 text-sm text-accent-green mb-3">
+                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                Request submitted!
+              </div>
+              <p class="text-xs text-gray-500 mb-3">You'll gain access once the TL approves your request.</p>
+            </div>
+            <button onclick="loadView('dashboard')" class="btn bg-white/5 text-gray-400 text-xs py-2 px-4 rounded-lg hover:bg-white/10 border border-border-subtle">
+              Go to Dashboard
+            </button>
+          </div>
+        </div>
+      `;
+    }
+
+    async function submitProjectAccessRequest(projectId) {
+      const tlEmail = document.getElementById('projectReqTL').value;
+      if (!tlEmail) { showNotification('Select a TL', 'warning'); return; }
+      try {
+        const res = await fetch('/api/access-requests', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            requester_name: currentUser.name,
+            requester_email: currentUser.email,
+            tl_email: tlEmail,
+            project_id: projectId
+          })
+        });
+        const data = await res.json();
+        if (data.success) {
+          document.getElementById('projectAccessRequestForm').classList.add('hidden');
+          document.getElementById('projectAccessSuccess').classList.remove('hidden');
+          showNotification('Access request submitted', 'success');
+        } else { showNotification(data.error || 'Request failed', 'error'); }
+      } catch (e) { showNotification('Error: ' + e.message, 'error'); }
     }
 
     // ── Navigation ──────────────────────────────────────────────
@@ -766,6 +934,7 @@
                       <div>
                         <h3 class="font-semibold text-white text-sm">${r.requester_name}</h3>
                         <p class="text-xs text-gray-500 mono">${r.requester_email}</p>
+                        ${r.project_name ? `<span class="inline-block mt-1 px-2 py-0.5 text-[10px] rounded-full bg-accent-blue/10 text-accent-blue border border-accent-blue/20">Project: ${r.project_name}</span>` : ''}
                         <div class="flex items-center gap-2 mt-1.5">
                           <span class="text-[10px] text-gray-600">${new Date(r.requested_at).toLocaleString()}</span>
                           <span class="text-[10px] text-gray-600">&middot;</span>
@@ -775,7 +944,7 @@
                     </div>
                     <div class="flex gap-2">
                       <button onclick="respondToRequest(${r.id}, 'rejected')" class="btn px-3 py-1.5 text-xs bg-accent-red/10 text-accent-red rounded-lg hover:bg-accent-red/20 border border-accent-red/20">Reject</button>
-                      <button onclick="respondToRequest(${r.id}, 'approved')" class="btn px-3 py-1.5 text-xs bg-accent-green/10 text-accent-green rounded-lg hover:bg-accent-green/20 border border-accent-green/20">Approve</button>
+                      <button onclick="respondToRequest(${r.id}, 'approved', ${r.project_id || 'null'}, '${(r.requester_email||'').replace(/'/g,"\\'")}')" class="btn px-3 py-1.5 text-xs bg-accent-green/10 text-accent-green rounded-lg hover:bg-accent-green/20 border border-accent-green/20">Approve</button>
                     </div>
                   </div>
                 </div>
@@ -786,7 +955,7 @@
       } catch (e) { panel.innerHTML = `<div class="p-6 text-red-400">Error: ${e.message}</div>`; }
     }
 
-    async function respondToRequest(requestId, status) {
+    async function respondToRequest(requestId, status, projectId, requesterEmail) {
       try {
         const res = await fetch(`/api/access-requests/${requestId}/respond`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -794,7 +963,20 @@
         });
         const data = await res.json();
         if (data.success) {
-          showNotification(`Request ${status}`, 'success');
+          // If approved and a project was specified, auto-assign the requester to that project
+          if (status === 'approved' && projectId && requesterEmail) {
+            try {
+              await fetch('/api/project-assignments', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ project_id: projectId, user_email: requesterEmail, role: 'developer' })
+              });
+              showNotification(`Approved & assigned to project`, 'success');
+            } catch (assignErr) {
+              showNotification(`Approved, but failed to assign to project`, 'warning');
+            }
+          } else {
+            showNotification(`Request ${status}`, 'success');
+          }
           loadView('access-requests');
         } else { showNotification(data.error || 'Failed', 'error'); }
       } catch (e) { showNotification('Error: ' + e.message, 'error'); }

@@ -150,10 +150,15 @@ class DatabaseManager:
 
     def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         """Get user by email."""
-        with self.connect() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("SELECT * FROM users WHERE email = %s AND is_active = TRUE", (email,))
-                return dict(cur.fetchone()) if cur.fetchone() else None
+        try:
+            with self.connect() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("SELECT * FROM users WHERE email = %s AND is_active = TRUE", (email,))
+                    result = cur.fetchone()
+                    return dict(result) if result else None
+        except Exception as e:
+            print(f"[DB Error] get_user_by_email: {e}")
+            return None
 
     def create_user(self, email: str, name: str, role: str, created_by: int) -> bool:
         """Create a new user (TL or Developer)."""

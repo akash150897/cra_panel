@@ -225,6 +225,22 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._json_response({"email": ""})
             return
 
+        # Get git user name from system
+        if path == "/api/git-name":
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["git", "config", "user.name"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                name = result.stdout.strip() if result.returncode == 0 else ""
+                self._json_response({"name": name})
+            except Exception:
+                self._json_response({"name": ""})
+            return
+
         # Get all TLs (for access request dropdown)
         if path == "/api/users/tls":
             try:
@@ -383,26 +399,39 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     from agent.config.auth_config import SUPER_ADMIN_EMAIL, SUPER_ADMIN_PASSWORD
                     if data.get("email") == SUPER_ADMIN_EMAIL and data.get("password") == SUPER_ADMIN_PASSWORD:
                         # Get or create super admin in DB
-                        user = db.get_user_by_email(SUPER_ADMIN_EMAIL)
-                        if not user:
-                            db.create_user(SUPER_ADMIN_EMAIL, "Super Admin", "super_admin", None)
+                        try:
                             user = db.get_user_by_email(SUPER_ADMIN_EMAIL)
-                        _current_user = user
-                        self._json_response({"success": True, "user": user})
+                            if not user:
+                                create_success = db.create_user(SUPER_ADMIN_EMAIL, "Super Admin", "super_admin", None)
+                                if create_success:
+                                    user = db.get_user_by_email(SUPER_ADMIN_EMAIL)
+                            if user:
+                                _current_user = user
+                                self._json_response({"success": True, "user": user})
+                            else:
+                                self._json_response({"error": "Failed to create/get super admin user"}, 500)
+                        except Exception as db_error:
+                            print(f"[Login Error] DB error: {db_error}")
+                            self._json_response({"error": f"Database error: {str(db_error)}"}, 500)
                     else:
                         self._json_response({"error": "Invalid credentials"}, 401)
 
                 else:
                     # Developer/TL login with email only
-                    user = db.get_user_by_email(data.get("email"))
-                    if user:
-                        _current_user = user
-                        self._json_response({"success": True, "user": user})
-                    else:
-                        # Check if there are any TLs they can request from
-                        tls = db.get_all_users(role='admin')
-                        self._json_response({"success": False, "not_registered": True, "available_tls": len(tls)})
+                    try:
+                        user = db.get_user_by_email(data.get("email"))
+                        if user:
+                            _current_user = user
+                            self._json_response({"success": True, "user": user})
+                        else:
+                            # Check if there are any TLs they can request from
+                            tls = db.get_all_users(role='admin')
+                            self._json_response({"success": False, "not_registered": True, "available_tls": len(tls) if tls else 0})
+                    except Exception as db_error:
+                        print(f"[Login Error] DB error: {db_error}")
+                        self._json_response({"error": f"Database error: {str(db_error)}"}, 500)
             except Exception as e:
+                print(f"[Login Error] General error: {e}")
                 self._json_response({"error": str(e)}, 500)
             return
 

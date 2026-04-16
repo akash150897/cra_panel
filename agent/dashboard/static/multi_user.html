@@ -285,9 +285,16 @@
       }
     }
 
-    function showRequestForm() {
+    async function showRequestForm() {
       const email = document.getElementById('devEmail').value;
       document.getElementById('reqEmail').value = email;
+      
+      // Also auto-populate git user name
+      const gitName = await getGitName();
+      if (gitName) {
+        document.getElementById('reqName').value = gitName;
+      }
+      
       document.querySelectorAll('.login-panel').forEach(p => p.classList.add('hidden'));
       document.getElementById('requestAccessForm').classList.remove('hidden');
     }
@@ -942,6 +949,18 @@
         return data.email || '';
       } catch (e) {
         console.error('Failed to get git email:', e);
+        return '';
+      }
+    }
+
+    // ── Get Git User Name ────────────────────────────────────────
+    async function getGitName() {
+      try {
+        const res = await fetch('/api/git-name');
+        const data = await res.json();
+        return data.name || '';
+      } catch (e) {
+        console.error('Failed to get git name:', e);
         return '';
       }
     }

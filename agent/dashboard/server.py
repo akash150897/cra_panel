@@ -1237,9 +1237,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "duplicated_lines": dup_stats.duplicated_lines,
                     "total_lines": dup_stats.total_lines
                 }
+            }
             
             print(f"[Scan] Returning duplication stats: {dup_stats.percentage}% ({dup_stats.duplicated_lines}/{dup_stats.total_lines} lines)")
-            }
             
         except Exception as e:
             print(f"[Scan Error] {e}")

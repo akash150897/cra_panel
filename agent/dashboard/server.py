@@ -676,7 +676,31 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def _scan_project(self, project_path: str, project_id: int, user_email: str) -> dict:
         """Run a code review scan on a project and return results."""
+        import tempfile
+        import shutil
+        import subprocess
+        
+        temp_dir = None
+        scan_path = project_path
+        
         try:
+            # Check if it's a remote Git URL
+            if project_path.startswith(('http://', 'https://', 'git@')):
+                # Clone to temp directory
+                temp_dir = tempfile.mkdtemp(prefix='cra_scan_')
+                repo_name = project_path.split('/')[-1].replace('.git', '')
+                scan_path = temp_dir
+                
+                # Clone the repository
+                result = subprocess.run(
+                    ['git', 'clone', '--depth', '1', project_path, temp_dir],
+                    capture_output=True, text=True, timeout=60
+                )
+                if result.returncode != 0:
+                    return {"success": False, "error": f"Failed to clone repository: {result.stderr}"}
+            elif not os.path.exists(project_path):
+                return {"success": False, "error": f"Project path does not exist: {project_path}"}
+            
             from agent.detector.language_detector import LanguageDetector
             from agent.detector.framework_detector import FrameworkDetector
             from agent.git.git_utils import scan_directory
@@ -696,11 +720,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             
             # Detect language and framework
             config = ConfigManager()
-            lang = LanguageDetector(project_path).detect_primary_language()
-            fw = FrameworkDetector(project_path).detect()
+            lang = LanguageDetector(scan_path).detect_primary_language()
+            fw = FrameworkDetector(scan_path).detect()
             
             # Scan files
-            files = scan_directory(project_path, lang, list(config.exclude_paths))
+            files = scan_directory(scan_path, lang, list(config.exclude_paths))
             
             if not files:
                 return {
@@ -763,6 +787,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except Exception as e:
             print(f"[Scan Error] {e}")
             return {"success": False, "error": str(e)}
+        finally:
+            # Clean up temp directory if we cloned
+            if temp_dir and os.path.exists(temp_dir):
+                try:
+                    shutil.rmtree(temp_dir)
+                except Exception:
+                    pass
 
     def _json_response(self, data: Any, status: int = 200):
         body = json.dumps(data, default=str).encode("utf-8")

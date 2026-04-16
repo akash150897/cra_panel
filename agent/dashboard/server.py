@@ -324,6 +324,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         """Handle POST requests for multi-user operations."""
+        global _current_user
         parsed = urlparse(self.path)
         path = parsed.path
 
@@ -342,7 +343,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 db = _get_db()
                 success = db.create_super_admin(data.get("email"), data.get("name"), data.get("password"))
                 if success:
-                    global _current_user
                     _current_user = {"email": data["email"], "name": data["name"], "role": "super_admin", "id": 1}
                     self._json_response({"success": True, "user": _current_user})
                 else:
@@ -366,7 +366,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         if not user:
                             db.create_user(SUPER_ADMIN_EMAIL, "Super Admin", "super_admin", None)
                             user = db.get_user_by_email(SUPER_ADMIN_EMAIL)
-                        global _current_user
                         _current_user = user
                         self._json_response({"success": True, "user": user})
                     else:

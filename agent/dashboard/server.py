@@ -159,7 +159,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._json_response(payload)
             return
 
-        # API: return source for a specific file
+        # API: return source for a specific file (legacy single-user mode)
         if path == "/api/file":
             qs = parse_qs(parsed.query)
             filepath = qs.get("path", [""])[0]
@@ -175,6 +175,48 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 except OSError:
                     pass
             self._json_response({"path": filepath, "lines": lines})
+            return
+
+        # API: return file content for multi-user project review
+        if path == "/api/file-content":
+            if not _current_user:
+                self._json_response({"error": "Unauthorized"}, 401)
+                return
+            qs = parse_qs(parsed.query)
+            filepath = qs.get("path", [""])[0]
+            project_id = qs.get("project_id", [None])[0]
+            if not filepath:
+                self._json_response({"error": "path parameter required"}, 400)
+                return
+            try:
+                normalised = os.path.normpath(filepath)
+                
+                # Try direct path first
+                if os.path.isfile(normalised):
+                    lines = Path(normalised).read_text(encoding="utf-8", errors="replace").splitlines()
+                    self._json_response({"path": filepath, "lines": lines})
+                    return
+                
+                # If not found and project_id provided, try to find in temp clone
+                if project_id:
+                    db = _get_db()
+                    projects = db.get_all_projects()
+                    project = next((p for p in projects if str(p["id"]) == project_id), None)
+                    if project and project["path"].startswith(('http://', 'https://', 'git@')):
+                        # Try to read from temp directory if scan was recent
+                        import tempfile
+                        import glob
+                        temp_dirs = glob.glob(os.path.join(tempfile.gettempdir(), 'cra_scan_*'))
+                        for temp_dir in sorted(temp_dirs, key=os.path.getmtime, reverse=True)[:3]:
+                            temp_path = os.path.join(temp_dir, filepath)
+                            if os.path.isfile(temp_path):
+                                lines = Path(temp_path).read_text(encoding="utf-8", errors="replace").splitlines()
+                                self._json_response({"path": filepath, "lines": lines})
+                                return
+                
+                self._json_response({"error": "File not found"}, 404)
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
             return
 
         # API: trigger a new scan
@@ -741,19 +783,44 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             engine = RuleEngine(python_analyzer=PythonAnalyzer(), js_analyzer=JavaScriptAnalyzer())
             result = engine.review_files(files, rules, config.max_file_size_bytes, config.exclude_paths)
             
-            # Prepare file list
-            file_list = [{"name": f.split('/')[-1] or f.split('\\')[-1], "path": f} for f in files]
+            # Run cross-file analysis (like old dashboard)
+            dup_violations, dup_stats = detect_cross_file_duplicates(files, lang)
+            const_violations = detect_cross_file_constants(files, lang)
+            test_violations = detect_missing_test_files(files, scan_path, lang)
+            arch_violations = detect_architecture_issues(scan_path, lang, fw, files)
             
-            # Prepare violations
+            result.violations.extend(dup_violations)
+            result.violations.extend(const_violations)
+            result.violations.extend(test_violations)
+            result.violations.extend(arch_violations)
+            result.deduplicate()
+            
+            # Calculate relative paths to hide temp directory
+            def make_relative(path):
+                if temp_dir and path.startswith(temp_dir):
+                    return path[len(temp_dir):].lstrip('/\\')
+                return path
+            
+            # Prepare file list with relative paths
+            file_list = []
+            for f in files:
+                rel_path = make_relative(f)
+                file_list.append({
+                    "name": rel_path.split('/')[-1] or rel_path.split('\\')[-1], 
+                    "path": rel_path
+                })
+            
+            # Prepare violations with relative paths
             violations = []
             for v in result.violations:
                 violations.append({
-                    "file": v.file_path,
+                    "file": make_relative(v.file_path),
                     "line": v.line_number,
                     "severity": v.severity.value if hasattr(v.severity, 'value') else str(v.severity),
                     "message": v.message,
                     "rule_id": v.rule_id,
-                    "code_snippet": v.snippet if v.snippet else None
+                    "code_snippet": v.snippet if v.snippet else None,
+                    "fix_suggestion": v.fix_suggestion if hasattr(v, 'fix_suggestion') else None
                 })
             
             # Update analytics with scan results

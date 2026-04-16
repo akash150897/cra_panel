@@ -1076,142 +1076,298 @@
       }
     }
 
-    // ── Render Project Review Results ────────────────────────────
+    // ── Render Project Review Results (Full Dashboard UI) ───────
+    let currentReviewData = null;
+    let currentFile = null;
+    let severityFilter = 'all';
+
     function renderProjectReview(panel, result, projectId, path) {
+      currentReviewData = { ...result, project_id: projectId };
       const stats = result.summary || { errors: 0, warnings: 0, infos: 0, total: 0 };
       const files = result.files || [];
       const violations = result.violations || [];
       
-      // Group violations by file
-      const violationsByFile = {};
+      // Build file tree structure
+      const fileTree = buildFileTree(files, violations);
+      
+      // Store for later use
+      window.currentViolations = {};
       violations.forEach(v => {
-        if (!violationsByFile[v.file]) violationsByFile[v.file] = [];
-        violationsByFile[v.file].push(v);
+        if (!window.currentViolations[v.file]) window.currentViolations[v.file] = [];
+        window.currentViolations[v.file].push(v);
       });
       
       panel.innerHTML = `
-        <div class="fade-in">
+        <div class="fade-in h-full flex flex-col">
           <!-- Header -->
-          <div class="flex items-center justify-between mb-6">
+          <div class="flex items-center justify-between mb-4 px-2">
             <div>
-              <button onclick="loadView('my-projects')" class="text-gray-400 hover:text-white mb-2 flex items-center gap-1">
+              <button onclick="loadView('my-projects')" class="text-gray-400 hover:text-white mb-1 flex items-center gap-1 text-sm">
                 <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
                 Back to Projects
               </button>
-              <h2 class="text-xl font-bold text-white">Code Review: ${result.project_name || 'Project'}</h2>
-              <p class="text-sm text-gray-500 mono mt-1">${path}</p>
+              <h2 class="text-xl font-bold text-white">${result.project_name || 'Project'}</h2>
+              <p class="text-xs text-gray-500 mono">${path}</p>
             </div>
-            <button onclick="openProjectReview(${projectId}, '${path}')" class="px-4 py-2 bg-accent-blue text-white rounded-lg hover:bg-blue-600 transition">
+            <button onclick="openProjectReview(${projectId}, '${path}')" class="px-4 py-2 bg-accent-blue text-white rounded-lg hover:bg-blue-600 transition text-sm">
               Rescan
             </button>
           </div>
           
-          <!-- Stats Cards -->
-          <div class="grid grid-cols-4 gap-4 mb-6">
-            <div class="bg-bg-card border border-gray-800 rounded-lg p-4 text-center cursor-pointer hover:border-accent-red transition" onclick="filterBySeverity('error')">
-              <div class="text-3xl font-bold text-accent-red">${stats.errors}</div>
-              <div class="text-sm text-gray-500 mt-1">Errors</div>
-            </div>
-            <div class="bg-bg-card border border-gray-800 rounded-lg p-4 text-center cursor-pointer hover:border-accent-yellow transition" onclick="filterBySeverity('warning')">
-              <div class="text-3xl font-bold text-accent-yellow">${stats.warnings}</div>
-              <div class="text-sm text-gray-500 mt-1">Warnings</div>
-            </div>
-            <div class="bg-bg-card border border-gray-800 rounded-lg p-4 text-center cursor-pointer hover:border-accent-blue transition" onclick="filterBySeverity('info')">
-              <div class="text-3xl font-bold text-accent-blue">${stats.infos}</div>
-              <div class="text-sm text-gray-500 mt-1">Info</div>
-            </div>
-            <div class="bg-bg-card border border-gray-800 rounded-lg p-4 text-center">
-              <div class="text-3xl font-bold text-white">${files.length}</div>
-              <div class="text-sm text-gray-500 mt-1">Files</div>
-            </div>
-          </div>
-          
-          <!-- Main Content -->
-          <div class="grid grid-cols-3 gap-6">
-            <!-- File List -->
-            <div class="col-span-1 bg-bg-card border border-gray-800 rounded-lg overflow-hidden max-h-[600px] overflow-y-auto">
-              <div class="p-3 border-b border-gray-800 bg-bg-dark">
-                <h3 class="font-semibold text-white">Files (${files.length})</h3>
+          <!-- Main Layout: Sidebar + Content -->
+          <div class="flex flex-1 overflow-hidden gap-4" style="min-height: 0;">
+            <!-- Sidebar -->
+            <div class="w-80 bg-bg-card border border-gray-800 rounded-lg flex flex-col overflow-hidden">
+              <!-- Stats -->
+              <div class="p-3 border-b border-gray-800">
+                <div class="grid grid-cols-3 gap-2">
+                  <div class="bg-bg-dark rounded p-2 text-center cursor-pointer hover:ring-1 hover:ring-accent-red/50" onclick="setFilter('error')">
+                    <div class="text-xl font-bold text-accent-red">${stats.errors}</div>
+                    <div class="text-xs text-gray-500">Errors</div>
+                  </div>
+                  <div class="bg-bg-dark rounded p-2 text-center cursor-pointer hover:ring-1 hover:ring-accent-yellow/50" onclick="setFilter('warning')">
+                    <div class="text-xl font-bold text-accent-yellow">${stats.warnings}</div>
+                    <div class="text-xs text-gray-500">Warnings</div>
+                  </div>
+                  <div class="bg-bg-dark rounded p-2 text-center cursor-pointer hover:ring-1 hover:ring-accent-blue/50" onclick="setFilter('info')">
+                    <div class="text-xl font-bold text-accent-blue">${stats.infos}</div>
+                    <div class="text-xs text-gray-500">Info</div>
+                  </div>
+                </div>
               </div>
-              <div class="divide-y divide-gray-800">
-                ${files.map(f => {
-                  const fileViolations = violationsByFile[f.path] || [];
-                  const errorCount = fileViolations.filter(v => v.severity === 'error').length;
-                  const warnCount = fileViolations.filter(v => v.severity === 'warning').length;
-                  return `
-                    <div class="p-3 hover:bg-bg-dark cursor-pointer ${selectedFile === f.path ? 'bg-bg-dark border-l-2 border-accent-blue' : ''}" 
-                         onclick="showFileViolations('${f.path}', ${JSON.stringify(fileViolations).replace(/"/g, '&quot;')})">
-                      <div class="flex items-center justify-between">
-                        <span class="text-sm text-white truncate">${f.name}</span>
-                        <div class="flex gap-2">
-                          ${errorCount > 0 ? `<span class="text-xs bg-accent-red/20 text-accent-red px-2 py-0.5 rounded">${errorCount}</span>` : ''}
-                          ${warnCount > 0 ? `<span class="text-xs bg-accent-yellow/20 text-accent-yellow px-2 py-0.5 rounded">${warnCount}</span>` : ''}
-                        </div>
-                      </div>
-                      <div class="text-xs text-gray-500 mono mt-1 truncate">${f.path}</div>
-                    </div>
-                  `;
-                }).join('')}
+              
+              <!-- Filters -->
+              <div class="px-3 py-2 border-b border-gray-800 flex gap-1">
+                <button class="filter-btn px-2 py-1 text-xs rounded ${severityFilter === 'all' ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-white'}" onclick="setFilter('all')">All</button>
+                <button class="filter-btn px-2 py-1 text-xs rounded ${severityFilter === 'error' ? 'bg-accent-red/20 text-accent-red' : 'text-gray-400 hover:text-white'}" onclick="setFilter('error')">Errors</button>
+                <button class="filter-btn px-2 py-1 text-xs rounded ${severityFilter === 'warning' ? 'bg-accent-yellow/20 text-accent-yellow' : 'text-gray-400 hover:text-white'}" onclick="setFilter('warning')">Warnings</button>
+                <button class="filter-btn px-2 py-1 text-xs rounded ${severityFilter === 'info' ? 'bg-accent-blue/20 text-accent-blue' : 'text-gray-400 hover:text-white'}" onclick="setFilter('info')">Info</button>
+              </div>
+              
+              <!-- File Tree -->
+              <div class="flex-1 overflow-y-auto p-2" id="fileTree">
+                ${renderFileTree(fileTree)}
               </div>
             </div>
             
-            <!-- Violations Detail -->
-            <div class="col-span-2 bg-bg-card border border-gray-800 rounded-lg overflow-hidden">
-              <div class="p-3 border-b border-gray-800 bg-bg-dark">
-                <h3 class="font-semibold text-white">Issues</h3>
+            <!-- Main Content -->
+            <div class="flex-1 bg-bg-card border border-gray-800 rounded-lg flex flex-col overflow-hidden">
+              <div id="codePlaceholder" class="flex items-center justify-center h-full">
+                <div class="text-center">
+                  <div class="w-16 h-16 rounded-2xl bg-accent-blue/10 flex items-center justify-center mx-auto mb-4">
+                    <svg class="w-8 h-8 text-accent-blue" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                  </div>
+                  <h3 class="text-lg font-semibold text-white mb-2">Select a file to review</h3>
+                  <p class="text-sm text-gray-500">Click any file in the sidebar to view its code and issues</p>
+                </div>
               </div>
-              <div id="violationsPanel" class="p-4 max-h-[600px] overflow-y-auto">
-                <p class="text-gray-500 text-center py-8">Select a file to view issues</p>
+              <div id="codeContent" class="hidden flex-col h-full">
+                <!-- File Header -->
+                <div class="px-4 py-3 border-b border-gray-800 bg-bg-dark flex items-center justify-between shrink-0">
+                  <div>
+                    <h3 class="text-sm font-semibold text-white mono" id="currentFileName"></h3>
+                    <span class="text-xs text-gray-500" id="currentFileIssues"></span>
+                  </div>
+                </div>
+                <!-- Issues Panel -->
+                <div id="issuesPanel" class="border-b border-gray-800 bg-bg-dark/50 max-h-48 overflow-y-auto shrink-0"></div>
+                <!-- Code -->
+                <div class="flex-1 overflow-auto">
+                  <table class="w-full">
+                    <tbody id="codeBody" class="mono text-sm"></tbody>
+                  </table>
+                </div>
               </div>
             </div>
           </div>
         </div>
       `;
-      
-      // Store violations for file selection
-      window.currentViolations = violationsByFile;
     }
 
-    let selectedFile = null;
-
-    function showFileViolations(filePath, violations) {
-      selectedFile = filePath;
-      const panel = document.getElementById('violationsPanel');
+    function buildFileTree(files, violations) {
+      const tree = { type: 'root', children: {}, violations: [] };
       
-      if (!violations || violations.length === 0) {
-        panel.innerHTML = `
-          <div class="text-center py-8">
-            <div class="text-accent-green text-5xl mb-4">✓</div>
-            <p class="text-gray-400">No issues found in this file!</p>
+      files.forEach(f => {
+        const parts = f.path.replace(/\\/g, '/').split('/').filter(p => p);
+        let node = tree;
+        
+        parts.forEach((part, idx) => {
+          if (!node.children[part]) {
+            node.children[part] = { 
+              type: idx === parts.length - 1 ? 'file' : 'folder', 
+              children: {}, 
+              violations: [],
+              path: parts.slice(0, idx + 1).join('/'),
+              fullPath: f.path,
+              name: part
+            };
+          }
+          node = node.children[part];
+        });
+      });
+      
+      // Attach violations
+      violations.forEach(v => {
+        const filePath = v.file.replace(/\\/g, '/');
+        const parts = filePath.split('/').filter(p => p);
+        let node = tree;
+        
+        parts.forEach(part => {
+          if (node.children[part]) {
+            node = node.children[part];
+          }
+        });
+        
+        if (node && node.type === 'file') {
+          node.violations.push(v);
+        }
+      });
+      
+      return tree;
+    }
+
+    function renderFileTree(node, level = 0) {
+      if (node.type === 'root') {
+        return Object.values(node.children).map(child => renderFileTree(child, 0)).join('');
+      }
+      
+      const indent = level * 12;
+      const hasViolations = node.violations && node.violations.length > 0;
+      const errors = hasViolations ? node.violations.filter(v => v.severity === 'error').length : 0;
+      const warnings = hasViolations ? node.violations.filter(v => v.severity === 'warning').length : 0;
+      
+      if (node.type === 'folder') {
+        return `
+          <div class="folder-group">
+            <div class="px-2 py-1 text-gray-400 text-sm" style="padding-left: ${indent + 8}px">
+              <span class="text-accent-yellow">📁</span> ${node.name}
+            </div>
+            ${Object.values(node.children).map(child => renderFileTree(child, level + 1)).join('')}
           </div>
         `;
+      }
+      
+      // File
+      const matchesFilter = severityFilter === 'all' || 
+        (hasViolations && node.violations.some(v => v.severity === severityFilter));
+      
+      if (!matchesFilter && hasViolations) return '';
+      
+      return `
+        <div class="sidebar-item px-2 py-1.5 cursor-pointer rounded hover:bg-bg-dark text-sm ${currentFile === node.fullPath ? 'bg-bg-dark border-l-2 border-accent-blue' : ''}" 
+             style="padding-left: ${indent + 8}px"
+             onclick="selectReviewFile('${node.fullPath.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-1 truncate">
+              <span class="text-gray-500">📄</span>
+              <span class="text-gray-300 truncate">${node.name}</span>
+            </div>
+            <div class="flex gap-1 shrink-0">
+              ${errors > 0 ? `<span class="text-xs bg-accent-red/20 text-accent-red px-1.5 rounded">${errors}</span>` : ''}
+              ${warnings > 0 ? `<span class="text-xs bg-accent-yellow/20 text-accent-yellow px-1.5 rounded">${warnings}</span>` : ''}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function setFilter(filter) {
+      severityFilter = filter;
+      renderProjectReview(document.getElementById('contentPanel'), currentReviewData, 0, '');
+    }
+
+    async function selectReviewFile(filePath) {
+      currentFile = filePath;
+      
+      // Update UI
+      document.getElementById('codePlaceholder').classList.add('hidden');
+      document.getElementById('codeContent').classList.remove('hidden');
+      document.getElementById('codeContent').classList.add('flex');
+      
+      // Update sidebar selection
+      document.getElementById('fileTree').innerHTML = renderFileTree(buildFileTree(currentReviewData.files, currentReviewData.violations));
+      
+      // Get file info
+      const fileName = filePath.split(/[\\/]/).pop();
+      const fileViolations = window.currentViolations[filePath] || [];
+      
+      document.getElementById('currentFileName').textContent = fileName;
+      document.getElementById('currentFileIssues').textContent = 
+        `${fileViolations.length} issue${fileViolations.length !== 1 ? 's' : ''} (${fileViolations.filter(v => v.severity === 'error').length} errors, ${fileViolations.filter(v => v.severity === 'warning').length} warnings)`;
+      
+      // Render issues
+      renderIssuesPanel(fileViolations, filePath);
+      
+      // Load and render code - pass project_id for temp file lookup
+      try {
+        const url = `/api/file-content?path=${encodeURIComponent(filePath)}&project_id=${currentReviewData.project_id || ''}&t=${Date.now()}`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data.error) {
+          document.getElementById('codeBody').innerHTML = `<tr><td colspan="2" class="p-4 text-gray-500">${data.error}</td></tr>`;
+        } else {
+          renderCodeView(data.lines || [], fileViolations);
+        }
+      } catch (e) {
+        document.getElementById('codeBody').innerHTML = `<tr><td colspan="2" class="p-4 text-gray-500">Error loading file: ${e.message}</td></tr>`;
+      }
+    }
+
+    function renderIssuesPanel(violations, filePath) {
+      const panel = document.getElementById('issuesPanel');
+      if (!violations.length) {
+        panel.innerHTML = '<div class="p-4 text-center text-accent-green">✓ No issues in this file</div>';
         return;
       }
       
-      panel.innerHTML = `
-        <div class="mb-4 pb-3 border-b border-gray-800">
-          <h4 class="text-white font-medium">${filePath.split('/').pop()}</h4>
-          <p class="text-xs text-gray-500 mono">${filePath}</p>
+      panel.innerHTML = violations.map(v => `
+        <div class="p-3 border-b border-gray-800/50 ${v.severity === 'error' ? 'bg-accent-red/5' : v.severity === 'warning' ? 'bg-accent-yellow/5' : 'bg-accent-blue/5'}">
+          <div class="flex items-start gap-2">
+            <span class="severity-badge ${v.severity === 'error' ? 'bg-accent-red text-white' : v.severity === 'warning' ? 'bg-accent-yellow text-black' : 'bg-accent-blue text-white'}">${v.severity}</span>
+            <span class="text-xs text-gray-500 mono">L${v.line}</span>
+          </div>
+          <p class="text-white text-sm mt-1">${v.message}</p>
+          ${v.rule_id ? `<p class="text-gray-500 text-xs mt-1 mono">${v.rule_id}</p>` : ''}
+          ${v.fix_suggestion ? `<p class="text-accent-green text-xs mt-1">Fix: ${v.fix_suggestion}</p>` : ''}
         </div>
-        <div class="space-y-3">
-          ${violations.map(v => `
-            <div class="p-3 rounded-lg ${v.severity === 'error' ? 'bg-accent-red/10 border border-accent-red/30' : v.severity === 'warning' ? 'bg-accent-yellow/10 border border-accent-yellow/30' : 'bg-accent-blue/10 border border-accent-blue/30'}">
-              <div class="flex items-start gap-2">
-                <span class="text-xs font-bold uppercase px-2 py-0.5 rounded ${v.severity === 'error' ? 'bg-accent-red text-white' : v.severity === 'warning' ? 'bg-accent-yellow text-black' : 'bg-accent-blue text-white'}">${v.severity}</span>
-                <span class="text-xs text-gray-400">Line ${v.line}</span>
-              </div>
-              <p class="text-white text-sm mt-2">${v.message}</p>
-              <p class="text-gray-500 text-xs mt-1">Rule: ${v.rule_id || 'N/A'}</p>
-              ${v.code_snippet ? `<pre class="mt-2 p-2 bg-bg-dark rounded text-xs mono text-gray-400 overflow-x-auto">${v.code_snippet}</pre>` : ''}
-            </div>
-          `).join('')}
-        </div>
-      `;
+      `).join('');
     }
 
-    function filterBySeverity(severity) {
-      // Implementation to filter violations by severity
-      showNotification(`Filtering by ${severity}...`, 'info');
+    function renderCodeView(lines, violations) {
+      const tbody = document.getElementById('codeBody');
+      const violationMap = {};
+      violations.forEach(v => {
+        if (!violationMap[v.line]) violationMap[v.line] = [];
+        violationMap[v.line].push(v);
+      });
+      
+      tbody.innerHTML = lines.map((line, idx) => {
+        const lineNum = idx + 1;
+        const lineViolations = violationMap[lineNum] || [];
+        const hasError = lineViolations.some(v => v.severity === 'error');
+        const hasWarning = lineViolations.some(v => v.severity === 'warning');
+        const hasInfo = lineViolations.some(v => v.severity === 'info');
+        
+        let highlightClass = '';
+        if (hasError) highlightClass = 'highlighted';
+        else if (hasWarning) highlightClass = 'highlighted-warn';
+        else if (hasInfo) highlightClass = 'highlighted-info';
+        
+        const tooltip = lineViolations.map(v => `${v.severity}: ${v.message}`).join('\\n');
+        
+        return `
+          <tr class="code-line ${highlightClass}" ${tooltip ? `title="${tooltip.replace(/"/g, '&quot;')}"` : ''}>
+            <td class="text-right text-gray-600 select-none pr-4 py-0.5 w-12 shrink-0 text-xs mono">${lineNum}</td>
+            <td class="py-0.5 whitespace-pre text-gray-300 mono text-xs">${escapeHtml(line)}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
     }
 
     // ── Show Add User Modal ─────────────────────────────────────

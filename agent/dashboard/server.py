@@ -996,15 +996,22 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return violations
             
             print(f"[ESLint] Running on {len(js_ts_files)} files...")
+            print(f"[ESLint] First few files: {js_ts_files[:3]}")
             cmd = eslint_bin.split() + ["--format=json", "--no-error-on-unmatched-pattern"] + js_ts_files
+            print(f"[ESLint] Command: {' '.join(cmd[:5])} ...")
             result = subprocess.run(cmd, cwd=project_root, capture_output=True, text=True, timeout=120)
+            print(f"[ESLint] Exit code: {result.returncode}")
             if result.stdout:
                 try:
                     eslint_results = json.loads(result.stdout)
                     total_eslint_issues = sum(len(f.get('messages', [])) for f in eslint_results)
                     print(f"[ESLint] Found {total_eslint_issues} issues from JSON output")
+                    print(f"[ESLint] Results files: {[f.get('filePath', '')[-50:] for f in eslint_results[:3]]}")  # Last 50 chars of path
                     for file_result in eslint_results:
                         file_path = file_result.get("filePath", "")
+                        msgs = file_result.get("messages", [])
+                        if msgs:
+                            print(f"[ESLint] {file_path[-50:]}: {len(msgs)} messages")
                         for msg in file_result.get("messages", []):
                             # Map ESLint severity to our severity
                             # 2 = error, 1 = warning, 0 = info
@@ -1106,8 +1113,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             # Load rules and run analysis
             loader = RuleLoader()
             rules = loader.load_rules(language=lang, framework=fw)
+            print(f"[Scan] Loaded {len(rules)} rules")
+            ast_rules = [r for r in rules if r.get('type') == 'ast']
+            print(f"[Scan] AST rules: {[r.get('id') for r in ast_rules]}")
             engine = RuleEngine(python_analyzer=PythonAnalyzer(), js_analyzer=JavaScriptAnalyzer())
             result = engine.review_files(files, rules, config.max_file_size_bytes, config.exclude_paths)
+            print(f"[Scan] Rule engine found {len(result.violations)} violations")
             
             # Run cross-file analysis (like old dashboard)
             dup_violations, dup_stats = detect_cross_file_duplicates(files, lang)

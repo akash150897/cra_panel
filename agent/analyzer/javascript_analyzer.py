@@ -82,14 +82,26 @@ class JavaScriptAnalyzer(BaseAnalyzer):
         file_path: str,
         content: str,
         rule: Dict[str, Any],
-        ast_check: str,
+        check_name: str,
     ) -> List[Violation]:
-        method_name = self._CHECK_DISPATCH.get(ast_check)
+        """Dispatch AST check by name."""
+        from agent.utils.logger import get_logger
+
+        logger = get_logger(__name__)
+
+        method_name = self._CHECK_DISPATCH.get(check_name)
         if not method_name:
-            logger.debug("Unknown JS check '%s'", ast_check)
+            logger.debug(f"[JSAnalyzer] No method for check: {check_name}")
             return []
-        method = getattr(self, method_name)
-        return method(file_path, content, rule)
+        method = getattr(self, method_name, None)
+        if not method:
+            logger.debug(f"[JSAnalyzer] Method not found: {method_name}")
+            return []
+
+        violations = method(file_path, content, rule)
+        if violations:
+            logger.debug(f"[JSAnalyzer] {check_name} found {len(violations)} violations in {file_path[-30:]}")
+        return violations
 
     # ------------------------------------------------------------------
     # Check implementations

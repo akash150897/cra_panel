@@ -1027,12 +1027,19 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                             message = msg.get("message", "")
                             line = msg.get("line", 1)
                             
-                            # Create violation
+                            # Convert absolute path to relative path for consistency
+                            rel_path = file_path
+                            if temp_dir and file_path.startswith(temp_dir):
+                                rel_path = file_path[len(temp_dir):].lstrip('/\\')
+                            elif project_root and file_path.startswith(project_root):
+                                rel_path = file_path[len(project_root):].lstrip('/\\')
+                            
+                            # Create violation with relative path
                             v = Violation(
                                 rule_id=rule_id or "eslint",
                                 rule_name=rule_id or "ESLint Issue",
                                 severity=severity,
-                                file_path=file_path,
+                                file_path=rel_path,
                                 line_number=line,
                                 message=message,
                                 fix_suggestion=msg.get("fix", {}).get("text", "") if msg.get("fix") else "",
@@ -1146,9 +1153,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             
             # Calculate relative paths to hide temp directory
             def make_relative(path):
-                if temp_dir and path.startswith(temp_dir):
-                    return path[len(temp_dir):].lstrip('/\\')
-                return path
+                import os
+                # Normalize path separators for comparison
+                norm_path = path.replace('\\', '/')
+                norm_temp = temp_dir.replace('\\', '/') if temp_dir else ""
+                if norm_temp and norm_path.startswith(norm_temp):
+                    return norm_path[len(norm_temp):].lstrip('/')
+                return path.replace('\\', '/')
             
             # Prepare file list with relative paths
             file_list = []
@@ -1177,6 +1188,17 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             print(f"[Scan] Sample violations being returned:")
             for v in violations[:5]:
                 print(f"  - {v['file']}:{v['line']} [{v['severity']}] {v['rule_id']}: {v['message'][:50]}")
+            
+            # Debug: Check for ESLint unused variable violations
+            unused_vars = [v for v in violations if 'unused' in v['rule_id'].lower()]
+            print(f"[Scan] Unused variable violations: {len(unused_vars)}")
+            for v in unused_vars[:5]:
+                print(f"  - {v['file']}:{v['line']} {v['rule_id']}")
+            
+            # Debug: Sample file paths
+            print(f"[Scan] Sample file paths in file_list:")
+            for f in file_list[:5]:
+                print(f"  - {f['path']}")
             
             # Update analytics with scan results
             db = _get_db()

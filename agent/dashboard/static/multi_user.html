@@ -134,32 +134,6 @@
         </button>
       </div>
 
-      <!-- First Run Setup -->
-      <div id="firstRunSetup" class="login-panel hidden">
-        <div class="text-center mb-6">
-          <div class="w-16 h-16 rounded-full bg-accent-green/20 flex items-center justify-center mx-auto mb-4">
-            <svg class="w-8 h-8 text-accent-green" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"/></svg>
-          </div>
-          <h2 class="text-xl font-bold text-white">Welcome! First Time Setup</h2>
-          <p class="text-sm text-gray-500 mt-2">Create the Super Admin account</p>
-        </div>
-        <div class="mb-4">
-          <label class="block text-sm font-medium text-gray-400 mb-2">Your Name</label>
-          <input type="text" id="setupName" class="w-full bg-bg-dark border border-gray-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-accent-green" placeholder="John Doe" />
-        </div>
-        <div class="mb-4">
-          <label class="block text-sm font-medium text-gray-400 mb-2">Email</label>
-          <input type="email" id="setupEmail" class="w-full bg-bg-dark border border-gray-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-accent-green" placeholder="admin@example.com" />
-        </div>
-        <div class="mb-6">
-          <label class="block text-sm font-medium text-gray-400 mb-2">Password</label>
-          <input type="password" id="setupPassword" class="w-full bg-bg-dark border border-gray-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-accent-green" placeholder="••••••••" />
-        </div>
-        <button onclick="firstRunSetup()" class="w-full bg-accent-green text-white font-semibold py-3 rounded-lg hover:bg-green-600 transition">
-          Create Super Admin Account
-        </button>
-      </div>
-
       <!-- Request Access Form -->
       <div id="requestAccessForm" class="login-panel hidden">
         <div class="text-center mb-6">
@@ -209,57 +183,32 @@
       document.getElementById(tab + 'Login').classList.remove('hidden');
     }
 
-    // ── Check First Run ────────────────────────────────────────────
-    async function checkFirstRun() {
-      try {
-        const res = await fetch('/api/auth/first-run');
-        const data = await res.json();
-        if (data.is_first_run) {
-          document.getElementById('loginTabs').classList.add('hidden');
-          document.querySelectorAll('.login-panel').forEach(p => p.classList.add('hidden'));
-          document.getElementById('firstRunSetup').classList.remove('hidden');
-        }
-      } catch (e) {
-        console.error('Error checking first run:', e);
-      }
-    }
+    // ── Notification Modal ─────────────────────────────────────
+    function showNotification(message, type = 'info') {
+      const colors = {
+        success: 'bg-accent-green',
+        error: 'bg-accent-red',
+        warning: 'bg-accent-yellow',
+        info: 'bg-accent-blue'
+      };
 
-    // ── First Run Setup ──────────────────────────────────────────
-    async function firstRunSetup() {
-      const name = document.getElementById('setupName').value;
-      const email = document.getElementById('setupEmail').value;
-      const password = document.getElementById('setupPassword').value;
-
-      if (!name || !email || !password) {
-        alert('Please fill all fields');
-        return;
-      }
-
-      try {
-        const res = await fetch('/api/auth/first-run-setup', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, email, password })
-        });
-        const data = await res.json();
-        if (data.success) {
-          currentUser = { email, name, role: 'super_admin' };
-          currentRole = 'super_admin';
-          closeLoginModal();
-          initDashboard();
-        } else {
-          alert(data.error || 'Setup failed');
-        }
-      } catch (e) {
-        alert('Error: ' + e.message);
-      }
+      const modal = document.createElement('div');
+      modal.className = `fixed top-4 right-4 z-50 px-6 py-4 rounded-lg shadow-lg text-white ${colors[type] || colors.info} fade-in`;
+      modal.innerHTML = `
+        <div class="flex items-center gap-3">
+          <span>${message}</span>
+          <button onclick="this.parentElement.parentElement.remove()" class="ml-2 text-white/80 hover:text-white">&times;</button>
+        </div>
+      `;
+      document.body.appendChild(modal);
+      setTimeout(() => modal.remove(), 5000);
     }
 
     // ── Developer Login ──────────────────────────────────────────
     async function developerLogin() {
       const email = document.getElementById('devEmail').value;
       if (!email) {
-        alert('Please enter your email');
+        showNotification('Please enter your email', 'warning');
         return;
       }
 
@@ -281,10 +230,10 @@
           document.getElementById('devNotRegistered').classList.remove('hidden');
           await loadTLs();
         } else {
-          alert(data.error || 'Login failed');
+          showNotification(data.error || 'Login failed', 'error');
         }
       } catch (e) {
-        alert('Error: ' + e.message);
+        showNotification('Error: ' + e.message, 'error');
       }
     }
 
@@ -294,7 +243,7 @@
       const password = document.getElementById('adminPassword').value;
 
       if (!email || !password) {
-        alert('Please fill all fields');
+        showNotification('Please fill all fields', 'warning');
         return;
       }
 
@@ -312,10 +261,10 @@
           closeLoginModal();
           initDashboard();
         } else {
-          alert(data.error || 'Invalid credentials');
+          showNotification(data.error || 'Invalid credentials', 'error');
         }
       } catch (e) {
-        alert('Error: ' + e.message);
+        showNotification('Error: ' + e.message, 'error');
       }
     }
 
@@ -351,7 +300,7 @@
       const tlEmail = document.getElementById('reqTLEmail').value;
 
       if (!name || !email || !tlEmail) {
-        alert('Please fill all fields');
+        showNotification('Please fill all fields', 'warning');
         return;
       }
 
@@ -363,13 +312,13 @@
         });
         const data = await res.json();
         if (data.success) {
-          alert('Access request submitted! The TL will be notified.');
+          showNotification('Access request submitted! The TL will be notified.', 'success');
           hideRequestForm();
         } else {
-          alert(data.error || 'Request failed');
+          showNotification(data.error || 'Request failed', 'error');
         }
       } catch (e) {
-        alert('Error: ' + e.message);
+        showNotification('Error: ' + e.message, 'error');
       }
     }
 
@@ -585,13 +534,13 @@
         });
         const data = await res.json();
         if (data.success) {
-          alert(`Request ${status}`);
+          showNotification(`Request ${status}`, 'success');
           loadView('access-requests');
         } else {
-          alert(data.error || 'Failed to respond');
+          showNotification(data.error || 'Failed to respond', 'error');
         }
       } catch (e) {
-        alert('Error: ' + e.message);
+        showNotification('Error: ' + e.message, 'error');
       }
     }
 
@@ -776,62 +725,200 @@
     // ── Open Project Review (Redirect to code review) ───────────
     function openProjectReview(projectId, path) {
       // In real implementation, this would open the code review view
-      alert('Opening code review for: ' + path);
+      showNotification('Opening code review for: ' + path, 'info');
     }
 
     // ── Show Add User Modal ─────────────────────────────────────
     function showAddUserModal() {
-      const name = prompt('User Name:');
-      if (!name) return;
-      const email = prompt('User Email:');
-      if (!email) return;
-      const role = prompt('Role (admin/developer):', 'developer');
-      if (!role) return;
+      // Create modal dynamically
+      const modal = document.createElement('div');
+      modal.id = 'addUserModal';
+      modal.className = 'fixed inset-0 z-50 flex items-center justify-center modal-overlay';
+      modal.innerHTML = `
+        <div class="bg-bg-card border border-gray-700 rounded-xl shadow-2xl w-full max-w-md p-6">
+          <h3 class="text-xl font-bold text-white mb-4">Add New User</h3>
+          <div class="mb-4">
+            <label class="block text-sm font-medium text-gray-400 mb-2">Name</label>
+            <input type="text" id="newUserName" class="w-full bg-bg-dark border border-gray-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-accent-blue" placeholder="John Doe" />
+          </div>
+          <div class="mb-4">
+            <label class="block text-sm font-medium text-gray-400 mb-2">Email</label>
+            <input type="email" id="newUserEmail" class="w-full bg-bg-dark border border-gray-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-accent-blue" placeholder="user@example.com" />
+          </div>
+          <div class="mb-6">
+            <label class="block text-sm font-medium text-gray-400 mb-2">Role</label>
+            <select id="newUserRole" class="w-full bg-bg-dark border border-gray-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-accent-blue">
+              <option value="developer">Developer</option>
+              <option value="admin">TL (Admin)</option>
+            </select>
+          </div>
+          <div class="flex gap-3">
+            <button onclick="document.getElementById('addUserModal').remove()" class="flex-1 bg-gray-700 text-gray-300 font-semibold py-3 rounded-lg hover:bg-gray-600 transition">
+              Cancel
+            </button>
+            <button onclick="submitAddUser()" class="flex-1 bg-accent-blue text-white font-semibold py-3 rounded-lg hover:bg-blue-600 transition">
+              Add User
+            </button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+    }
 
-      fetch('/api/users', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, email, role })
-      })
-      .then(res => res.json())
-      .then(data => {
+    async function submitAddUser() {
+      const name = document.getElementById('newUserName').value;
+      const email = document.getElementById('newUserEmail').value;
+      const role = document.getElementById('newUserRole').value;
+
+      if (!name || !email) {
+        showNotification('Please fill all fields', 'warning');
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, email, role })
+        });
+        const data = await res.json();
         if (data.success) {
-          alert('User added successfully');
+          showNotification('User added successfully', 'success');
+          document.getElementById('addUserModal').remove();
           loadView('users');
         } else {
-          alert(data.error || 'Failed to add user');
+          showNotification(data.error || 'Failed to add user', 'error');
         }
-      })
-      .catch(e => alert('Error: ' + e.message));
+      } catch (e) {
+        showNotification('Error: ' + e.message, 'error');
+      }
     }
 
     // ── Show Add Project Modal ───────────────────────────────────
-    function showAddProjectModal() {
-      const name = prompt('Project Name:');
-      if (!name) return;
-      const path = prompt('Project Path:');
-      if (!path) return;
-      const mainBranch = prompt('Main Branch:', 'main');
+    async function showAddProjectModal() {
+      // Load available users for assignment
+      let tls = [];
+      let devs = [];
+      try {
+        const res = await fetch('/api/users');
+        const users = await res.json();
+        tls = users.filter(u => u.role === 'admin');
+        devs = users.filter(u => u.role === 'developer');
+      } catch (e) {
+        console.error('Failed to load users:', e);
+      }
 
-      fetch('/api/projects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, path, main_branch: mainBranch || 'main' })
-      })
-      .then(res => res.json())
-      .then(data => {
-        if (data.success) {
-          alert('Project added successfully');
+      const modal = document.createElement('div');
+      modal.id = 'addProjectModal';
+      modal.className = 'fixed inset-0 z-50 flex items-center justify-center modal-overlay';
+      modal.innerHTML = `
+        <div class="bg-bg-card border border-gray-700 rounded-xl shadow-2xl w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto">
+          <h3 class="text-xl font-bold text-white mb-4">Add New Project</h3>
+          
+          <!-- Basic Info -->
+          <div class="mb-4">
+            <label class="block text-sm font-medium text-gray-400 mb-2">Project Name *</label>
+            <input type="text" id="newProjectName" class="w-full bg-bg-dark border border-gray-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-accent-blue" placeholder="My Project" />
+          </div>
+          <div class="mb-4">
+            <label class="block text-sm font-medium text-gray-400 mb-2">Project Path *</label>
+            <input type="text" id="newProjectPath" class="w-full bg-bg-dark border border-gray-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-accent-blue" placeholder="/path/to/project or https://github.com/..." />
+          </div>
+          <div class="mb-4">
+            <label class="block text-sm font-medium text-gray-400 mb-2">Main Branch</label>
+            <input type="text" id="newProjectBranch" class="w-full bg-bg-dark border border-gray-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-accent-blue" placeholder="main" value="main" />
+          </div>
+          
+          <!-- Assign TLs -->
+          <div class="mb-4">
+            <label class="block text-sm font-medium text-gray-400 mb-2">Assign TLs (Optional)</label>
+            <select id="newProjectTLs" multiple class="w-full bg-bg-dark border border-gray-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-accent-blue min-h-[80px]">
+              ${tls.map(tl => `<option value="${tl.email}">${tl.name} (${tl.email})</option>`).join('')}
+            </select>
+            <p class="text-xs text-gray-500 mt-1">Hold Ctrl/Cmd to select multiple TLs</p>
+          </div>
+          
+          <!-- Assign Devs -->
+          <div class="mb-6">
+            <label class="block text-sm font-medium text-gray-400 mb-2">Assign Developers (Optional)</label>
+            <select id="newProjectDevs" multiple class="w-full bg-bg-dark border border-gray-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-accent-blue min-h-[100px]">
+              ${devs.map(dev => `<option value="${dev.email}">${dev.name} (${dev.email})</option>`).join('')}
+            </select>
+            <p class="text-xs text-gray-500 mt-1">Hold Ctrl/Cmd to select multiple developers</p>
+          </div>
+          
+          <div class="flex gap-3">
+            <button onclick="document.getElementById('addProjectModal').remove()" class="flex-1 bg-gray-700 text-gray-300 font-semibold py-3 rounded-lg hover:bg-gray-600 transition">
+              Cancel
+            </button>
+            <button onclick="submitAddProject()" class="flex-1 bg-accent-blue text-white font-semibold py-3 rounded-lg hover:bg-blue-600 transition">
+              Add Project
+            </button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+    }
+
+    async function submitAddProject() {
+      const name = document.getElementById('newProjectName').value;
+      const path = document.getElementById('newProjectPath').value;
+      const mainBranch = document.getElementById('newProjectBranch').value;
+      
+      // Get selected TLs and Devs
+      const tlSelect = document.getElementById('newProjectTLs');
+      const devSelect = document.getElementById('newProjectDevs');
+      const selectedTLs = Array.from(tlSelect.selectedOptions).map(o => o.value);
+      const selectedDevs = Array.from(devSelect.selectedOptions).map(o => o.value);
+
+      if (!name || !path) {
+        showNotification('Please fill all required fields', 'warning');
+        return;
+      }
+
+      try {
+        // Create project first
+        const res = await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, path, main_branch: mainBranch || 'main' })
+        });
+        const data = await res.json();
+        
+        if (data.success && data.project_id) {
+          const projectId = data.project_id;
+          
+          // Assign selected TLs
+          for (const tlEmail of selectedTLs) {
+            await fetch('/api/project-assignments', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ project_id: projectId, user_email: tlEmail, role: 'admin' })
+            });
+          }
+          
+          // Assign selected Devs
+          for (const devEmail of selectedDevs) {
+            await fetch('/api/project-assignments', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ project_id: projectId, user_email: devEmail, role: 'developer' })
+            });
+          }
+          
+          showNotification('Project added with team assignments', 'success');
+          document.getElementById('addProjectModal').remove();
           loadView('projects');
         } else {
-          alert(data.error || 'Failed to add project');
+          showNotification(data.error || 'Failed to add project', 'error');
         }
-      })
-      .catch(e => alert('Error: ' + e.message));
+      } catch (e) {
+        showNotification('Error: ' + e.message, 'error');
+      }
     }
 
     // ── Initialize ─────────────────────────────────────────────────
-    checkFirstRun();
+    // No first-run check - Super Admin login uses static credentials from auth_config.py
   </script>
 </body>
 </html>

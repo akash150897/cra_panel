@@ -718,6 +718,88 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
+    def _ensure_eslint_for_scan(self, project_root: str) -> Optional[str]:
+        """Ensure ESLint is installed and configured with unused-imports plugin."""
+        import subprocess
+        import shutil
+        from pathlib import Path
+        import json
+        
+        # Check if ESLint is already installed
+        eslint_path = Path(project_root) / "node_modules" / ".bin" / "eslint"
+        eslint_cmd_path = Path(project_root) / "node_modules" / ".bin" / "eslint.cmd"
+        
+        eslint_bin = None
+        if eslint_path.exists():
+            eslint_bin = str(eslint_path)
+        elif eslint_cmd_path.exists():
+            eslint_bin = str(eslint_cmd_path)
+        
+        # Install ESLint if not found
+        if not eslint_bin:
+            if not shutil.which("npm"):
+                print("[ESLint] npm not available, skipping ESLint")
+                return None
+            
+            pkg_json = Path(project_root) / "package.json"
+            has_typescript = any(Path(project_root).glob("**/*.ts")) or any(Path(project_root).glob("**/*.tsx"))
+            
+            print(f"[ESLint] Installing ESLint with unused-imports plugin...")
+            packages = ["eslint", "eslint-plugin-unused-imports"]
+            if has_typescript:
+                packages += ["@typescript-eslint/parser", "@typescript-eslint/eslint-plugin"]
+            
+            result = subprocess.run(
+                ["npm", "install", "--save-dev"] + packages,
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+                shell=True,
+            )
+            if result.returncode != 0:
+                print(f"[ESLint] Install failed: {result.stderr[:200]}")
+                return None
+            
+            # Re-check for eslint binary
+            if eslint_path.exists():
+                eslint_bin = str(eslint_path)
+            elif eslint_cmd_path.exists():
+                eslint_bin = str(eslint_cmd_path)
+        
+        if not eslint_bin:
+            return None
+        
+        # Ensure ESLint config exists with unused-imports rules
+        eslintrc_path = Path(project_root) / ".eslintrc.json"
+        if not eslintrc_path.exists():
+            has_typescript = any(Path(project_root).glob("**/*.ts")) or any(Path(project_root).glob("**/*.tsx"))
+            config = {
+                "env": {"browser": True, "es2021": True, "node": True},
+                "extends": ["eslint:recommended", "plugin:unused-imports/recommended"],
+                "parserOptions": {"ecmaVersion": "latest", "sourceType": "module"},
+                "plugins": ["unused-imports"],
+                "rules": {
+                    "unused-imports/no-unused-imports": "error",
+                    "unused-imports/no-unused-vars": [
+                        "warn",
+                        {"vars": "all", "varsIgnorePattern": "^_", "args": "after-used", "argsIgnorePattern": "^_"}
+                    ],
+                    "no-unused-vars": "off"
+                }
+            }
+            if has_typescript:
+                config["extends"].append("plugin:@typescript-eslint/recommended")
+                config["parser"] = "@typescript-eslint/parser"
+                config["rules"]["@typescript-eslint/no-unused-vars"] = [
+                    "warn",
+                    {"vars": "all", "varsIgnorePattern": "^_", "args": "after-used", "argsIgnorePattern": "^_"}
+                ]
+            
+            eslintrc_path.write_text(json.dumps(config, indent=2))
+            print(f"[ESLint] Created .eslintrc.json with unused-imports rules")
+        
+        return eslint_bin
+
     def _run_eslint_json(self, project_root: str, files: List[str], temp_dir: Optional[str] = None) -> List:
         """Run ESLint with JSON output and return violations."""
         import json
@@ -727,25 +809,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         
         violations = []
         
-        # Find ESLint binary
-        eslint_bin = None
-        for path in [
-            Path(project_root) / "node_modules" / ".bin" / "eslint",
-            Path(project_root) / "node_modules" / ".bin" / "eslint.cmd",
-        ]:
-            if path.exists():
-                eslint_bin = str(path)
-                break
-        
-        if not eslint_bin:
-            # Try global eslint
-            try:
-                result = subprocess.run(["npx", "eslint", "--version"], capture_output=True, text=True)
-                if result.returncode == 0:
-                    eslint_bin = "npx eslint"
-            except Exception:
-                return violations
-        
+        # Ensure ESLint is installed and configured
+        eslint_bin = self._ensure_eslint_for_scan(project_root)
         if not eslint_bin:
             return violations
         
@@ -755,12 +820,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if not js_ts_files:
                 return violations
             
+            print(f"[ESLint] Running on {len(js_ts_files)} files...")
             cmd = eslint_bin.split() + ["--format=json", "--no-error-on-unmatched-pattern"] + js_ts_files
             result = subprocess.run(cmd, cwd=project_root, capture_output=True, text=True, timeout=120)
             
             if result.stdout:
                 try:
                     eslint_results = json.loads(result.stdout)
+                    print(f"[ESLint] Found {sum(len(f.get('messages', [])) for f in eslint_results)} issues")
                     for file_result in eslint_results:
                         file_path = file_result.get("filePath", "")
                         for msg in file_result.get("messages", []):
@@ -792,7 +859,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                             )
                             violations.append(v)
                 except json.JSONDecodeError:
-                    pass
+                    print(f"[ESLint] Failed to parse JSON output")
+            if result.stderr:
+                print(f"[ESLint] stderr: {result.stderr[:200]}")
         except Exception as e:
             print(f"[ESLint] Error running ESLint: {e}")
         

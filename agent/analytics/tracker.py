@@ -308,7 +308,7 @@ class AnalyticsTracker:
             avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else 0
             avg_effort = sum(effort_scores) / len(effort_scores) if effort_scores else 0
 
-            # Group by user and track branches
+            # Group by user and track branches and projects
             by_user = {}
             for d in data:
                 email = d['user_email']
@@ -320,7 +320,8 @@ class AnalyticsTracker:
                         'issues': 0,
                         'quality_scores': [],
                         'effort_scores': [],
-                        'branches': set()
+                        'branches': set(),
+                        'projects': {}  # project_id -> project_name
                     }
                 by_user[email]['commits'] += d['commits_count']
                 by_user[email]['issues'] += d['issues_found']
@@ -330,12 +331,16 @@ class AnalyticsTracker:
                     by_user[email]['effort_scores'].append(d['effort_score'])
                 if d.get('branch'):
                     by_user[email]['branches'].add(d['branch'])
+                # Track projects
+                if d.get('project_name'):
+                    by_user[email]['projects'][d.get('project_id', 0)] = d['project_name']
 
             developers = []
             for user_data in by_user.values():
                 quality_list = user_data['quality_scores']
                 effort_list = user_data['effort_scores']
                 branches_list = sorted(user_data['branches'])
+                projects_list = list(user_data['projects'].values())
                 developers.append({
                     'name': user_data['name'],
                     'email': user_data['email'],
@@ -344,7 +349,9 @@ class AnalyticsTracker:
                     'quality_score': round(sum(quality_list) / len(quality_list), 1) if quality_list else 0,
                     'effort_score': round(sum(effort_list) / len(effort_list), 1) if effort_list else 0,
                     'branches': branches_list,
-                    'branch_count': len(branches_list)
+                    'branch_count': len(branches_list),
+                    'projects': projects_list,
+                    'project_count': len(projects_list)
                 })
 
             return {

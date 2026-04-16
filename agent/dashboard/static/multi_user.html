@@ -1341,6 +1341,9 @@
       console.log('[CodeReview] Errors:', violations.filter(v => v.severity === 'error').length);
       console.log('[CodeReview] Warnings:', violations.filter(v => v.severity === 'warning').length);
       console.log('[CodeReview] Infos:', violations.filter(v => v.severity === 'info').length);
+      console.log('[CodeReview] Duplication stats:', result.duplication);
+      console.log('[CodeReview] ESLint violations:', violations.filter(v => v.rule_id && v.rule_id.includes('eslint')).length);
+      console.log('[CodeReview] Unused variable violations:', violations.filter(v => v.rule_id && v.rule_id.includes('unused')).length);
       console.log('[CodeReview] Sample violations:', violations.slice(0, 3));
       
       panel.innerHTML = `
@@ -1609,16 +1612,11 @@
         // Re-render with new scan results
         renderProjectReview(panel, result, projectId, path);
         
-        // Refresh branches to ensure list is up to date
-        fetchProjectBranches(projectId);
-        
-        // Set the selected branch
-        setTimeout(() => {
-          const branchSelect = document.getElementById('reviewBranch');
-          if (branchSelect) {
-            branchSelect.value = branch;
-          }
-        }, 100);
+        // Set the selected branch immediately after render
+        const branchSelect = document.getElementById('reviewBranch');
+        if (branchSelect) {
+          branchSelect.value = branch;
+        }
         
         showNotification(`Switched to branch: ${branch}`, 'success');
       } catch (e) {

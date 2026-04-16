@@ -673,6 +673,7 @@
 
     // ── Analytics View ─────────────────────────────────────────────
     let analyticsDays = 7;
+    let analyticsBranch = 'all';
     let analyticsData = null;
 
     async function loadAnalyticsView(panel) {
@@ -682,15 +683,21 @@
         <div class="flex justify-between items-center mb-6">
           <h2 class="text-xl font-bold text-white">${isDev ? 'My Activity' : 'Team Analytics'}</h2>
           <div class="flex items-center gap-3">
+            ${!isDev ? `
+            <select id="analyticsBranch" onchange="changeAnalyticsBranch(this.value)" class="bg-bg-dark border border-gray-700 text-white rounded-lg px-3 py-2 text-sm">
+              <option value="all" ${analyticsBranch === 'all' ? 'selected' : ''}>All Branches</option>
+              <option value="main">main</option>
+              <option value="develop">develop</option>
+              <option value="feature">feature/*</option>
+            </select>
+            ` : ''}
             <select id="analyticsDays" onchange="changeAnalyticsDays(this.value)" class="bg-bg-dark border border-gray-700 text-white rounded-lg px-3 py-2 text-sm">
               <option value="7" ${analyticsDays === 7 ? 'selected' : ''}>Last 7 days</option>
               <option value="14" ${analyticsDays === 14 ? 'selected' : ''}>Last 14 days</option>
               <option value="30" ${analyticsDays === 30 ? 'selected' : ''}>Last 30 days</option>
               <option value="90" ${analyticsDays === 90 ? 'selected' : ''}>Last 90 days</option>
             </select>
-            <button onclick="refreshAnalytics()" class="px-3 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 text-sm">
-              Refresh
-            </button>
+            <button onclick="refreshAnalytics()" class="px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition text-sm">Refresh</button>
           </div>
         </div>
 
@@ -726,10 +733,11 @@
                   <th class="px-4 py-3 text-sm font-medium text-gray-400 text-center">Issues</th>
                   <th class="px-4 py-3 text-sm font-medium text-gray-400 text-center">Quality</th>
                   <th class="px-4 py-3 text-sm font-medium text-gray-400 text-center">Effort</th>
+                  <th class="px-4 py-3 text-sm font-medium text-gray-400 text-center">Branches</th>
                 </tr>
               </thead>
               <tbody id="devAnalyticsTable">
-                <tr><td colspan="5" class="px-4 py-8 text-center text-gray-500">Loading...</td></tr>
+                <tr><td colspan="6" class="px-4 py-8 text-center text-gray-500">Loading...</td></tr>
               </tbody>
             </table>
           </div>
@@ -752,15 +760,24 @@
       refreshAnalytics();
     }
 
+    function changeAnalyticsBranch(branch) {
+      analyticsBranch = branch;
+      refreshAnalytics();
+    }
+
     async function refreshAnalytics() {
       await fetchAnalyticsData();
     }
 
     async function fetchAnalyticsData() {
       try {
-        const url = currentRole === 'developer'
+        let url = currentRole === 'developer'
           ? `/api/analytics?user_email=${currentUser.email}&days=${analyticsDays}`
           : `/api/analytics?days=${analyticsDays}`;
+        
+        if (analyticsBranch !== 'all') {
+          url += `&branch=${analyticsBranch}`;
+        }
 
         const res = await fetch(url);
         analyticsData = await res.json();
@@ -775,7 +792,7 @@
         if (currentRole !== 'developer' && analyticsData.developers) {
           const tbody = document.getElementById('devAnalyticsTable');
           if (analyticsData.developers.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-8 text-center text-gray-500">No activity data available</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-gray-500">No activity data available</td></tr>';
           } else {
             tbody.innerHTML = analyticsData.developers.map(dev => `
               <tr class="border-b border-gray-800/50 hover:bg-bg-dark/50">
@@ -791,6 +808,11 @@
                   </span>
                 </td>
                 <td class="px-4 py-3 text-center text-white">${dev.effort_score}</td>
+                <td class="px-4 py-3 text-center">
+                  ${dev.branches && dev.branches.length > 0 
+                    ? dev.branches.map(b => `<span class="inline-block px-2 py-0.5 text-xs rounded bg-accent-blue/20 text-accent-blue mr-1">${b}</span>`).join('')
+                    : '<span class="text-gray-500 text-xs">-</span>'}
+                </td>
               </tr>
             `).join('');
           }
@@ -841,12 +863,82 @@
 
     // ── Developers View (TL) ─────────────────────────────────────
     async function loadDevelopersView(panel) {
-      panel.innerHTML = `
-        <h2 class="text-xl font-bold text-white mb-6">My Developers</h2>
-        <div class="bg-bg-card border border-gray-800 rounded-lg p-6">
-          <p class="text-gray-500">Developers assigned to your projects will appear here.</p>
-        </div>
-      `;
+      try {
+        // Get current user's projects
+        const myProjectsRes = await fetch(`/api/my-projects?t=${Date.now()}`);
+        const myProjects = await myProjectsRes.json();
+        
+        if (myProjects.length === 0) {
+          panel.innerHTML = `
+            <h2 class="text-xl font-bold text-white mb-6">My Developers</h2>
+            <div class="bg-bg-card border border-gray-800 rounded-lg p-6">
+              <p class="text-gray-500">You don't have any projects yet. Add projects to see assigned developers.</p>
+            </div>
+          `;
+          return;
+        }
+        
+        // Get all project assignments for TL's projects
+        const projectIds = myProjects.map(p => p.id);
+        const allDevelopers = [];
+        const seenEmails = new Set();
+        
+        for (const projectId of projectIds) {
+          const assignmentsRes = await fetch(`/api/projects/${projectId}/assignments?t=${Date.now()}`);
+          const assignments = await assignmentsRes.json();
+          
+          assignments.forEach(a => {
+            // Only include developers (not other TLs/admins)
+            if (a.user_role === 'developer' && !seenEmails.has(a.email)) {
+              seenEmails.add(a.email);
+              allDevelopers.push({
+                name: a.name,
+                email: a.email,
+                project: myProjects.find(p => p.id === projectId)?.name || 'Unknown',
+                projectRole: a.role_on_project
+              });
+            }
+          });
+        }
+        
+        if (allDevelopers.length === 0) {
+          panel.innerHTML = `
+            <h2 class="text-xl font-bold text-white mb-6">My Developers</h2>
+            <div class="bg-bg-card border border-gray-800 rounded-lg p-6">
+              <p class="text-gray-500">No developers assigned to your projects yet. Use "Assign" button in My Projects to add developers.</p>
+            </div>
+          `;
+          return;
+        }
+        
+        panel.innerHTML = `
+          <h2 class="text-xl font-bold text-white mb-6">My Developers (${allDevelopers.length})</h2>
+          <div class="bg-bg-card border border-gray-800 rounded-lg overflow-hidden">
+            <table class="w-full text-left">
+              <thead class="bg-bg-dark border-b border-gray-800">
+                <tr>
+                  <th class="px-4 py-3 text-sm font-medium text-gray-400">Name</th>
+                  <th class="px-4 py-3 text-sm font-medium text-gray-400">Email</th>
+                  <th class="px-4 py-3 text-sm font-medium text-gray-400">Project</th>
+                  <th class="px-4 py-3 text-sm font-medium text-gray-400">Role on Project</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${allDevelopers.map(d => `
+                  <tr class="border-b border-gray-800/50">
+                    <td class="px-4 py-3 text-sm text-white">${d.name}</td>
+                    <td class="px-4 py-3 text-sm text-gray-400 mono">${d.email}</td>
+                    <td class="px-4 py-3 text-sm text-gray-300">${d.project}</td>
+                    <td class="px-4 py-3 text-sm text-gray-300">${d.projectRole}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+      } catch (e) {
+        panel.innerHTML = `<div class="text-red-400">Error loading developers: ${e.message}</div>`;
+      }
     }
 
     // ── Settings View ────────────────────────────────────────────
@@ -1277,18 +1369,27 @@
       // Re-render just the file tree, not the whole panel
       const fileTree = buildFileTree(currentReviewData.files, currentReviewData.violations);
       document.getElementById('fileTree').innerHTML = renderFileTree(fileTree);
-      // Update filter button styles
-      const buttons = document.querySelectorAll('#fileTree').parentElement.querySelectorAll('.filter-btn');
-      buttons.forEach(btn => {
-        const btnFilter = btn.textContent.toLowerCase();
-        if (btnFilter === filter || (filter === 'all' && btnFilter === 'all')) {
-          btn.classList.add('bg-gray-700', 'text-white');
-          btn.classList.remove('text-gray-400');
-        } else {
-          btn.classList.remove('bg-gray-700', 'text-white');
-          btn.classList.add('text-gray-400');
-        }
-      });
+      // Update filter button styles - find buttons by their container
+      const filterContainer = document.getElementById('fileTree').previousElementSibling;
+      if (filterContainer) {
+        const buttons = filterContainer.querySelectorAll('.filter-btn');
+        buttons.forEach(btn => {
+          const btnText = btn.textContent.toLowerCase();
+          const isActive = (filter === 'all' && btnText.includes('all')) ||
+                          (filter === 'error' && btnText.includes('error')) ||
+                          (filter === 'warning' && btnText.includes('warning')) ||
+                          (filter === 'info' && btnText.includes('info'));
+          if (isActive) {
+            btn.classList.remove('text-gray-400');
+            if (filter === 'error') btn.className = 'filter-btn px-2 py-1 text-xs rounded bg-accent-red/20 text-accent-red';
+            else if (filter === 'warning') btn.className = 'filter-btn px-2 py-1 text-xs rounded bg-accent-yellow/20 text-accent-yellow';
+            else if (filter === 'info') btn.className = 'filter-btn px-2 py-1 text-xs rounded bg-accent-blue/20 text-accent-blue';
+            else btn.className = 'filter-btn px-2 py-1 text-xs rounded bg-gray-700 text-white';
+          } else {
+            btn.className = 'filter-btn px-2 py-1 text-xs rounded text-gray-400 hover:text-white';
+          }
+        });
+      }
     }
 
     async function selectReviewFile(filePath) {

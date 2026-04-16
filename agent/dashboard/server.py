@@ -405,6 +405,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             user_email = qs.get("user_email", [None])[0]
             project_id = qs.get("project_id", [None])[0]
             days = int(qs.get("days", ["7"])[0])
+            branch = qs.get("branch", [None])[0]  # None means all branches
 
             # If project_id is provided, convert to int
             if project_id:
@@ -419,7 +420,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 summary = tracker.get_analytics_summary(
                     project_id=project_id,
                     user_email=user_email,
-                    days=days
+                    days=days,
+                    branch=branch
                 )
                 self._json_response(summary)
             except Exception as e:
@@ -716,6 +718,86 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
+    def _run_eslint_json(self, project_root: str, files: List[str], temp_dir: Optional[str] = None) -> List:
+        """Run ESLint with JSON output and return violations."""
+        import json
+        import subprocess
+        from pathlib import Path
+        from agent.utils.reporter import Severity, Violation
+        
+        violations = []
+        
+        # Find ESLint binary
+        eslint_bin = None
+        for path in [
+            Path(project_root) / "node_modules" / ".bin" / "eslint",
+            Path(project_root) / "node_modules" / ".bin" / "eslint.cmd",
+        ]:
+            if path.exists():
+                eslint_bin = str(path)
+                break
+        
+        if not eslint_bin:
+            # Try global eslint
+            try:
+                result = subprocess.run(["npx", "eslint", "--version"], capture_output=True, text=True)
+                if result.returncode == 0:
+                    eslint_bin = "npx eslint"
+            except Exception:
+                return violations
+        
+        if not eslint_bin:
+            return violations
+        
+        # Run ESLint with JSON format on all files
+        try:
+            js_ts_files = [f for f in files if f.endswith(('.js', '.jsx', '.ts', '.tsx'))]
+            if not js_ts_files:
+                return violations
+            
+            cmd = eslint_bin.split() + ["--format=json", "--no-error-on-unmatched-pattern"] + js_ts_files
+            result = subprocess.run(cmd, cwd=project_root, capture_output=True, text=True, timeout=120)
+            
+            if result.stdout:
+                try:
+                    eslint_results = json.loads(result.stdout)
+                    for file_result in eslint_results:
+                        file_path = file_result.get("filePath", "")
+                        for msg in file_result.get("messages", []):
+                            # Map ESLint severity to our severity
+                            # 2 = error, 1 = warning, 0 = info
+                            eslint_severity = msg.get("severity", 1)
+                            if eslint_severity == 2:
+                                severity = Severity.ERROR
+                            elif eslint_severity == 1:
+                                severity = Severity.WARNING
+                            else:
+                                severity = Severity.INFO
+                            
+                            rule_id = msg.get("ruleId", "eslint")
+                            message = msg.get("message", "")
+                            line = msg.get("line", 1)
+                            
+                            # Create violation
+                            v = Violation(
+                                rule_id=rule_id or "eslint",
+                                rule_name=rule_id or "ESLint Issue",
+                                severity=severity,
+                                file_path=file_path,
+                                line_number=line,
+                                message=message,
+                                fix_suggestion=msg.get("fix", {}).get("text", "") if msg.get("fix") else "",
+                                snippet="",
+                                category="lint"
+                            )
+                            violations.append(v)
+                except json.JSONDecodeError:
+                    pass
+        except Exception as e:
+            print(f"[ESLint] Error running ESLint: {e}")
+        
+        return violations
+
     def _scan_project(self, project_path: str, project_id: int, user_email: str) -> dict:
         """Run a code review scan on a project and return results."""
         import tempfile
@@ -793,6 +875,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             result.violations.extend(const_violations)
             result.violations.extend(test_violations)
             result.violations.extend(arch_violations)
+            
+            # Run ESLint for JS/TS projects to catch linting issues
+            if lang in ('javascript', 'typescript'):
+                eslint_violations = self._run_eslint_json(scan_path, files, temp_dir)
+                result.violations.extend(eslint_violations)
+            
             result.deduplicate()
             
             # Calculate relative paths to hide temp directory
@@ -830,9 +918,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 user_email=user_email,
                 project_id=project_id,
                 date=date.today(),
-                commits=0,  # Not a commit, just a scan
-                issues=len(violations),
-                quality_score=quality_score,
+                commits_count=0,  # Not a commit, just a scan
+                issues_found=len(violations),
+                code_quality_score=quality_score,
                 effort_score=0
             )
             

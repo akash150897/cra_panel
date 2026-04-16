@@ -471,6 +471,11 @@ def track_push_analytics():
                                capture_output=True, text=True, check=True)
         user_email = result.stdout.strip()
         
+        # Get current branch
+        result = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+                               capture_output=True, text=True, cwd=repo_path, check=True)
+        branch = result.stdout.strip() or 'main'
+        
         # Get commits being pushed
         result = subprocess.run(['git', 'log', 'HEAD@{1}..HEAD', '--oneline'],
                                capture_output=True, text=True, cwd=repo_path)
@@ -499,15 +504,16 @@ def track_push_analytics():
         if not any(up['id'] == project_id for up in user_projects):
             return  # User not assigned to this project
         
-        # Log the activity
+        # Log the activity with branch
         from datetime import date
         db.log_analytics(
             user_email=user_email,
             project_id=project_id,
             date=date.today(),
-            commits=commit_count,
-            issues=0,  # Will be updated by full scan
-            quality_score=100,
+            branch=branch,
+            commits_count=commit_count,
+            issues_found=0,  # Will be updated by full scan
+            code_quality_score=100,
             effort_score=commit_count * 10
         )
         

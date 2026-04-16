@@ -274,7 +274,8 @@ class AnalyticsTracker:
 
     def get_analytics_summary(self, project_id: Optional[int] = None,
                              user_email: Optional[str] = None,
-                             days: int = 7) -> Dict[str, Any]:
+                             days: int = 7,
+                             branch: Optional[str] = None) -> Dict[str, Any]:
         """Get analytics summary for the specified period."""
         end_date = date.today()
         start_date = end_date - timedelta(days=days)
@@ -284,7 +285,8 @@ class AnalyticsTracker:
                 user_email=user_email,
                 project_id=project_id,
                 start_date=start_date,
-                end_date=end_date
+                end_date=end_date,
+                branch=branch
             )
 
             if not data:
@@ -306,7 +308,7 @@ class AnalyticsTracker:
             avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else 0
             avg_effort = sum(effort_scores) / len(effort_scores) if effort_scores else 0
 
-            # Group by user
+            # Group by user and track branches
             by_user = {}
             for d in data:
                 email = d['user_email']
@@ -317,7 +319,8 @@ class AnalyticsTracker:
                         'commits': 0,
                         'issues': 0,
                         'quality_scores': [],
-                        'effort_scores': []
+                        'effort_scores': [],
+                        'branches': set()
                     }
                 by_user[email]['commits'] += d['commits_count']
                 by_user[email]['issues'] += d['issues_found']
@@ -325,18 +328,23 @@ class AnalyticsTracker:
                     by_user[email]['quality_scores'].append(d['code_quality_score'])
                 if d['effort_score']:
                     by_user[email]['effort_scores'].append(d['effort_score'])
+                if d.get('branch'):
+                    by_user[email]['branches'].add(d['branch'])
 
             developers = []
             for user_data in by_user.values():
                 quality_list = user_data['quality_scores']
                 effort_list = user_data['effort_scores']
+                branches_list = sorted(user_data['branches'])
                 developers.append({
                     'name': user_data['name'],
                     'email': user_data['email'],
                     'commits': user_data['commits'],
                     'issues': user_data['issues'],
                     'quality_score': round(sum(quality_list) / len(quality_list), 1) if quality_list else 0,
-                    'effort_score': round(sum(effort_list) / len(effort_list), 1) if effort_list else 0
+                    'effort_score': round(sum(effort_list) / len(effort_list), 1) if effort_list else 0,
+                    'branches': branches_list,
+                    'branch_count': len(branches_list)
                 })
 
             return {

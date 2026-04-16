@@ -90,6 +90,7 @@ class DatabaseManager:
                         id SERIAL PRIMARY KEY,
                         user_email VARCHAR(255) REFERENCES users(email),
                         project_id INTEGER REFERENCES projects(id),
+                        branch VARCHAR(100) DEFAULT 'main',
                         date DATE NOT NULL,
                         commits_count INTEGER DEFAULT 0,
                         lines_added INTEGER DEFAULT 0,
@@ -99,9 +100,35 @@ class DatabaseManager:
                         files_changed INTEGER DEFAULT 0,
                         code_quality_score DECIMAL(5,2),
                         effort_score DECIMAL(5,2),
-                        UNIQUE(user_email, project_id, date)
+                        UNIQUE(user_email, project_id, branch, date)
                     )
                 """)
+                
+                # Migration: Add branch column if it doesn't exist (for existing databases)
+                try:
+                    cur.execute("""
+                        ALTER TABLE developer_analytics 
+                        ADD COLUMN IF NOT EXISTS branch VARCHAR(100) DEFAULT 'main'
+                    """)
+                    # Update unique constraint
+                    cur.execute("""
+                        DO $$
+                        BEGIN
+                            IF EXISTS (
+                                SELECT 1 FROM pg_indexes 
+                                WHERE indexname = 'developer_analytics_user_email_project_id_date_key'
+                            ) THEN
+                                ALTER TABLE developer_analytics 
+                                DROP CONSTRAINT developer_analytics_user_email_project_id_date_key;
+                                
+                                ALTER TABLE developer_analytics 
+                                ADD CONSTRAINT developer_analytics_user_email_project_id_branch_date_key 
+                                UNIQUE(user_email, project_id, branch, date);
+                            END IF;
+                        END $$;
+                    """)
+                except Exception:
+                    pass  # Column might already exist or other migration issues
 
                 # Email notifications log
                 cur.execute("""
@@ -330,6 +357,7 @@ class DatabaseManager:
             with self.connect() as conn:
                 with conn.cursor() as cur:
                     # Extract metrics with defaults
+                    branch = metrics.get('branch', 'main')
                     commits = metrics.get('commits_count', 0)
                     lines_added = metrics.get('lines_added', 0)
                     lines_removed = metrics.get('lines_removed', 0)
@@ -339,13 +367,13 @@ class DatabaseManager:
                     quality_score = metrics.get('code_quality_score', None)
                     effort_score = metrics.get('effort_score', None)
 
-                    # Insert or update (upsert)
+                    # Insert or update (upsert) - now includes branch
                     cur.execute("""
                         INSERT INTO developer_analytics
-                        (user_email, project_id, date, commits_count, lines_added, lines_removed,
+                        (user_email, project_id, branch, date, commits_count, lines_added, lines_removed,
                          issues_found, bugs_fixed, files_changed, code_quality_score, effort_score)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (user_email, project_id, date)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (user_email, project_id, branch, date)
                         DO UPDATE SET
                             commits_count = developer_analytics.commits_count + EXCLUDED.commits_count,
                             lines_added = developer_analytics.lines_added + EXCLUDED.lines_added,
@@ -355,7 +383,7 @@ class DatabaseManager:
                             files_changed = developer_analytics.files_changed + EXCLUDED.files_changed,
                             code_quality_score = EXCLUDED.code_quality_score,
                             effort_score = EXCLUDED.effort_score
-                    """, (user_email, project_id, date, commits, lines_added, lines_removed,
+                    """, (user_email, project_id, branch, date, commits, lines_added, lines_removed,
                           issues, bugs_fixed, files_changed, quality_score, effort_score))
                     conn.commit()
                     return True
@@ -364,7 +392,8 @@ class DatabaseManager:
             return False
 
     def get_analytics(self, user_email: Optional[str] = None, project_id: Optional[int] = None,
-                     start_date: Optional[date] = None, end_date: Optional[date] = None) -> List[Dict[str, Any]]:
+                     start_date: Optional[date] = None, end_date: Optional[date] = None,
+                     branch: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get analytics data with filters."""
         with self.connect() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -383,6 +412,9 @@ class DatabaseManager:
                 if project_id:
                     query += " AND da.project_id = %s"
                     params.append(project_id)
+                if branch:
+                    query += " AND da.branch = %s"
+                    params.append(branch)
                 if start_date:
                     query += " AND da.date >= %s"
                     params.append(start_date)

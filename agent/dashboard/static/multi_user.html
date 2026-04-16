@@ -1375,7 +1375,7 @@
             <div class="w-80 bg-bg-card border border-gray-800 rounded-lg flex flex-col overflow-hidden">
               <!-- Stats -->
               <div class="p-3 border-b border-gray-800">
-                <div class="grid grid-cols-3 gap-2">
+                <div class="grid grid-cols-2 gap-2 mb-2">
                   <div class="bg-bg-dark rounded p-2 text-center cursor-pointer hover:ring-1 hover:ring-accent-red/50" onclick="setFilter('error')">
                     <div class="text-xl font-bold text-accent-red">${stats.errors}</div>
                     <div class="text-xs text-gray-500">Errors</div>
@@ -1384,9 +1384,15 @@
                     <div class="text-xl font-bold text-accent-yellow">${stats.warnings}</div>
                     <div class="text-xs text-gray-500">Warnings</div>
                   </div>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
                   <div class="bg-bg-dark rounded p-2 text-center cursor-pointer hover:ring-1 hover:ring-accent-blue/50" onclick="setFilter('info')">
                     <div class="text-xl font-bold text-accent-blue">${stats.infos}</div>
                     <div class="text-xs text-gray-500">Info</div>
+                  </div>
+                  <div class="bg-bg-dark rounded p-2 text-center cursor-pointer hover:ring-1 hover:ring-accent-purple/50" onclick="showDuplicationView()">
+                    <div class="text-xl font-bold text-accent-purple">${currentReviewData.violations.filter(v => v.category === 'duplication' || v.rule_id === 'CROSS001' || v.rule_id === 'CROSS003').length}</div>
+                    <div class="text-xs text-gray-500">Duplication</div>
                   </div>
                 </div>
               </div>
@@ -1402,6 +1408,15 @@
               <!-- File Tree -->
               <div class="flex-1 overflow-y-auto p-2" id="fileTree">
                 ${renderFileTree(fileTree)}
+              </div>
+              
+              <!-- Duplication View (hidden by default) -->
+              <div class="flex-1 overflow-y-auto p-2 hidden" id="duplicationView">
+                <div class="flex items-center justify-between mb-2">
+                  <h3 class="text-sm font-semibold text-white">Duplication Issues</h3>
+                  <button onclick="hideDuplicationView()" class="text-xs text-gray-400 hover:text-white">Back to Files</button>
+                </div>
+                <div id="duplicationList"></div>
               </div>
             </div>
             
@@ -1602,6 +1617,9 @@
     async function selectReviewFile(filePath) {
       currentFile = filePath;
       
+      // Hide duplication view if open
+      hideDuplicationView();
+      
       // Update UI
       document.getElementById('codePlaceholder').classList.add('hidden');
       document.getElementById('codeContent').classList.remove('hidden');
@@ -1657,6 +1675,40 @@
           ${v.fix_suggestion ? `<p class="text-accent-green text-xs mt-1">Fix: ${v.fix_suggestion}</p>` : ''}
         </div>
       `).join('');
+    }
+
+    // ── Duplication View ───────────────────────────────────────
+    function showDuplicationView() {
+      document.getElementById('fileTree').classList.add('hidden');
+      document.getElementById('duplicationView').classList.remove('hidden');
+      
+      const dupViolations = currentReviewData.violations.filter(v => 
+        v.category === 'duplication' || v.rule_id === 'CROSS001' || v.rule_id === 'CROSS003'
+      );
+      
+      const container = document.getElementById('duplicationList');
+      if (!dupViolations.length) {
+        container.innerHTML = '<div class="text-sm text-gray-400 text-center py-4">No duplication issues found</div>';
+        return;
+      }
+      
+      container.innerHTML = dupViolations.map(v => `
+        <div class="p-3 border-b border-gray-800/50 hover:bg-bg-dark cursor-pointer transition" onclick="selectReviewFile('${v.file.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')">
+          <div class="flex items-start gap-2">
+            <span class="text-xs text-gray-500 mono">L${v.line}</span>
+            <div class="flex-1">
+              <p class="text-white text-sm">${v.message}</p>
+              <p class="text-gray-500 text-xs mt-1 mono">${v.rule_id}</p>
+              <p class="text-gray-400 text-xs mt-1">${v.file.split(/[\\/]/).pop()}</p>
+            </div>
+          </div>
+        </div>
+      `).join('');
+    }
+    
+    function hideDuplicationView() {
+      document.getElementById('duplicationView').classList.add('hidden');
+      document.getElementById('fileTree').classList.remove('hidden');
     }
 
     // ── Scroll to specific line in code view ───────────────────

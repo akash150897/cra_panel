@@ -802,8 +802,10 @@
       try {
         const res = await fetch('/api/users');
         const users = await res.json();
-        tls = users.filter(u => u.role === 'admin');
-        devs = users.filter(u => u.role === 'developer');
+        if (users && Array.isArray(users)) {
+          tls = users.filter(u => u.role === 'admin');
+          devs = users.filter(u => u.role === 'developer');
+        }
       } catch (e) {
         console.error('Failed to load users:', e);
       }
@@ -917,8 +919,24 @@
       }
     }
 
-    // ── Initialize ─────────────────────────────────────────────────
-    // No first-run check - Super Admin login uses static credentials from auth_config.py
+    // ── Check Mode and Initialize ─────────────────────────────────
+    async function initLogin() {
+      try {
+        const res = await fetch('/api/mode');
+        const data = await res.json();
+        if (data.mode === 'admin') {
+          // For admin mode, hide developer tab and show only super admin
+          switchLoginTab('admin');
+          // Optionally hide the developer tab completely
+          document.querySelector('[data-tab="developer"]').style.display = 'none';
+        }
+      } catch (e) {
+        console.error('Failed to get mode:', e);
+      }
+    }
+
+    // Initialize on load
+    initLogin();
   </script>
 </body>
 </html>

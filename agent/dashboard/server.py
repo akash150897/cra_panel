@@ -204,6 +204,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._json_response({"error": str(e)}, 500)
             return
 
+        # Get current mode (admin or developer)
+        if path == "/api/mode":
+            self._json_response({"mode": _mode})
+            return
+
         # Get all TLs (for access request dropdown)
         if path == "/api/users/tls":
             try:

@@ -158,6 +158,22 @@ class DatabaseManager:
                 except Exception:
                     pass
 
+                # Migration: per-TL Microsoft Teams report delivery settings.
+                # Each TL configures their own Power Automate webhook URL,
+                # preferred local time, and timezone. The scheduler fires
+                # once per TL per day at their configured moment.
+                try:
+                    cur.execute("""
+                        ALTER TABLE users
+                            ADD COLUMN IF NOT EXISTS teams_webhook_url TEXT,
+                            ADD COLUMN IF NOT EXISTS report_time VARCHAR(5),
+                            ADD COLUMN IF NOT EXISTS report_timezone VARCHAR(64) DEFAULT 'Asia/Kolkata',
+                            ADD COLUMN IF NOT EXISTS report_enabled BOOLEAN DEFAULT FALSE,
+                            ADD COLUMN IF NOT EXISTS last_report_sent_on DATE
+                    """)
+                except Exception:
+                    pass
+
                 # Analytics data (commits, issues, etc.)
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS developer_analytics (
@@ -307,6 +323,95 @@ class DatabaseManager:
                     return [dict(row) for row in result] if result else []
         except Exception as e:
             print(f"[DB Error] get_all_users: {e}")
+            return []
+
+    # ── Per-TL Teams report settings ─────────────────────────────
+    def get_report_settings(self, email: str) -> Dict[str, Any]:
+        """Return the TL's report delivery settings (never None)."""
+        try:
+            with self.connect() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("""
+                        SELECT teams_webhook_url, report_time, report_timezone,
+                               report_enabled, last_report_sent_on
+                        FROM users WHERE email = %s
+                    """, (email,))
+                    row = cur.fetchone()
+                    if not row:
+                        return {}
+                    return {
+                        "teams_webhook_url": row.get("teams_webhook_url") or "",
+                        "report_time": row.get("report_time") or "",
+                        "report_timezone": row.get("report_timezone") or "Asia/Kolkata",
+                        "report_enabled": bool(row.get("report_enabled")),
+                        "last_report_sent_on": (row["last_report_sent_on"].isoformat()
+                                                if row.get("last_report_sent_on") else None),
+                    }
+        except Exception as e:
+            print(f"[DB Error] get_report_settings: {e}")
+            return {}
+
+    def update_report_settings(self, email: str, *,
+                               teams_webhook_url: Optional[str] = None,
+                               report_time: Optional[str] = None,
+                               report_timezone: Optional[str] = None,
+                               report_enabled: Optional[bool] = None) -> bool:
+        """Partial update — only non-None fields are written."""
+        sets = []
+        params: List[Any] = []
+        if teams_webhook_url is not None:
+            sets.append("teams_webhook_url = %s"); params.append(teams_webhook_url or None)
+        if report_time is not None:
+            # Accept "HH:MM" or empty to clear
+            sets.append("report_time = %s"); params.append(report_time or None)
+        if report_timezone is not None:
+            sets.append("report_timezone = %s"); params.append(report_timezone or "Asia/Kolkata")
+        if report_enabled is not None:
+            sets.append("report_enabled = %s"); params.append(bool(report_enabled))
+        if not sets:
+            return True
+        params.append(email)
+        try:
+            with self.connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(f"UPDATE users SET {', '.join(sets)} WHERE email = %s", params)
+                    conn.commit()
+                    return True
+        except Exception as e:
+            print(f"[DB Error] update_report_settings: {e}")
+            return False
+
+    def mark_report_sent(self, email: str, sent_on) -> None:
+        """Record the date (UTC or local — caller decides) the report was sent."""
+        try:
+            with self.connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE users SET last_report_sent_on = %s WHERE email = %s",
+                                (sent_on, email))
+                    conn.commit()
+        except Exception as e:
+            print(f"[DB Error] mark_report_sent: {e}")
+
+    def get_tls_with_schedules(self) -> List[Dict[str, Any]]:
+        """Return every admin who has a webhook + time + is enabled."""
+        try:
+            with self.connect() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("""
+                        SELECT email, name, teams_webhook_url, report_time,
+                               report_timezone, last_report_sent_on
+                        FROM users
+                        WHERE role = 'admin'
+                          AND is_active = TRUE
+                          AND report_enabled = TRUE
+                          AND teams_webhook_url IS NOT NULL
+                          AND teams_webhook_url <> ''
+                          AND report_time IS NOT NULL
+                          AND report_time <> ''
+                    """)
+                    return [dict(r) for r in (cur.fetchall() or [])]
+        except Exception as e:
+            print(f"[DB Error] get_tls_with_schedules: {e}")
             return []
 
     def create_project(self, name: str, path: str, main_branch: str, created_by: int) -> Optional[int]:

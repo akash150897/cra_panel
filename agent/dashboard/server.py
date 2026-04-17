@@ -902,6 +902,20 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
 
         # Static files
+        # Per-TL Microsoft Teams report settings (current user)
+        if path == "/api/me/report-settings":
+            if not _current_user:
+                self._json_response({"error": "Unauthorized"}, 401); return
+            if _current_user.get("role") not in ("admin", "super_admin"):
+                self._json_response({"error": "Forbidden: TL only"}, 403); return
+            try:
+                db = _get_db()
+                settings = db.get_report_settings(_current_user["email"])
+                self._json_response({"success": True, "settings": settings})
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
+
         if path == "/" or path == "":
             self.path = "/index.html"
 
@@ -1417,6 +1431,85 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         print(f"[Assign] backfill error: {e}")
 
                 self._json_response({"success": success, "backfill": backfill_summary})
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
+
+        # ── Update the current TL's Teams report settings ──
+        if path == "/api/me/report-settings":
+            if not _current_user:
+                self._json_response({"error": "Unauthorized"}, 401); return
+            if _current_user.get("role") not in ("admin", "super_admin"):
+                self._json_response({"error": "Forbidden: TL only"}, 403); return
+            try:
+                db = _get_db()
+                # Minimal validation: webhook URL should be an HTTPS Azure
+                # Logic Apps / Power Automate endpoint. Reject obvious typos
+                # but don't be overly strict — corp tenants use custom subdomains.
+                url = (data.get("teams_webhook_url") or "").strip()
+                if url and not url.lower().startswith("https://"):
+                    self._json_response({"error": "Webhook URL must start with https://"}, 400)
+                    return
+                rt = (data.get("report_time") or "").strip()
+                if rt:
+                    parts = rt.split(":")
+                    if len(parts) != 2 or not (parts[0].isdigit() and parts[1].isdigit()) \
+                            or not (0 <= int(parts[0]) < 24 and 0 <= int(parts[1]) < 60):
+                        self._json_response({"error": "report_time must be HH:MM (24h)"}, 400)
+                        return
+                ok = db.update_report_settings(
+                    _current_user["email"],
+                    teams_webhook_url=url if "teams_webhook_url" in data else None,
+                    report_time=rt if "report_time" in data else None,
+                    report_timezone=(data.get("report_timezone") or "").strip() or None
+                                     if "report_timezone" in data else None,
+                    report_enabled=bool(data.get("report_enabled"))
+                                     if "report_enabled" in data else None,
+                )
+                self._json_response({"success": ok,
+                                     "settings": db.get_report_settings(_current_user["email"])})
+            except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
+
+        # ── Send a test report to the TL's configured webhook right now ──
+        if path == "/api/me/test-report":
+            if not _current_user:
+                self._json_response({"error": "Unauthorized"}, 401); return
+            if _current_user.get("role") not in ("admin", "super_admin"):
+                self._json_response({"error": "Forbidden: TL only"}, 403); return
+            try:
+                from agent.analytics import get_tracker
+                from agent.utils import teams_notifier
+                from datetime import datetime
+                db = _get_db()
+                settings = db.get_report_settings(_current_user["email"])
+                url = settings.get("teams_webhook_url") or ""
+                if not url:
+                    self._json_response({"error": "No webhook URL configured yet."}, 400)
+                    return
+                tracker = get_tracker(db)
+                summary = tracker.get_analytics_summary(
+                    viewer_email=_current_user["email"], viewer_role="admin", days=1,
+                )
+                host = self.headers.get("Host") or "localhost:9090"
+                result = teams_notifier.send_team_report(
+                    webhook_url=url,
+                    tl_name=_current_user.get("name") or _current_user["email"],
+                    tl_email=_current_user["email"],
+                    summary=summary,
+                    developer_stats=summary.get("developers", []),
+                    date_label=datetime.now().strftime("%A, %d %b %Y") + " (test)",
+                    dashboard_url=f"http://{host}",
+                )
+                self._json_response({
+                    "success": bool(result.get("ok")),
+                    "status":  result.get("status"),
+                    "message": ("Report posted. Check your Teams chat/channel."
+                                if result.get("ok")
+                                else f"Delivery failed: HTTP {result.get('status')} — "
+                                     f"{result.get('body')}"),
+                })
             except Exception as e:
                 self._json_response({"error": str(e)}, 500)
             return
@@ -2107,6 +2200,15 @@ def run_dashboard(project_dir: Optional[str] = None, port: int = 9090,
 
     print(f"\n  Starting dashboard on http://localhost:{port}")
     print(f"  Press Ctrl+C to stop.\n")
+
+    # Boot per-TL Microsoft Teams report scheduler (no-op if no TL has
+    # configured a webhook + time + is enabled — and the thread is daemon,
+    # so Ctrl+C cleanly exits). Can be disabled with CRA_DISABLE_REPORT_SCHEDULER=1.
+    try:
+        from agent.utils import report_scheduler
+        report_scheduler.start(_get_db, dashboard_url=f"http://localhost:{port}")
+    except Exception as e:
+        print(f"[WARN] Report scheduler did not start: {e}")
 
     if not no_open:
         threading.Timer(0.5, lambda: webbrowser.open(f"http://localhost:{port}")).start()

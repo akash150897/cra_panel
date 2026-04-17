@@ -203,18 +203,24 @@ Examples:
     "send-reports": """
 Usage: cra send-reports [OPTIONS]
 
-Send daily analytics reports to all TLs via email.
-This command is designed to run as a cron job.
+Send analytics reports to TLs via email or Microsoft Teams webhook.
+Typically driven by the in-process scheduler (configure per-TL time + URL
+in the dashboard Settings page); this CLI is useful for ad-hoc / cron use.
 
 Options:
   --days DAYS       Number of days to include in report (default: 1)
+  --teams           Deliver via each TL's Power Automate webhook instead of email
+  --tl-email EMAIL  Only send to this TL (good for testing a single webhook)
 
 Examples:
-  cra send-reports              # Send yesterday's report
-  cra send-reports --days 7     # Send weekly report
+  cra send-reports                             # email, all TLs, yesterday
+  cra send-reports --teams                     # Teams, all TLs with a webhook
+  cra send-reports --teams --tl-email a@b.co   # test one TL's Teams webhook
+  cra send-reports --days 7                    # weekly rollup via email
 
-Cron setup:
-  0 9 * * * cra send-reports    # Run daily at 9 AM
+Cron setup (legacy; prefer dashboard per-TL scheduler):
+  0 9 * * * cra send-reports
+  30 18 * * * cra send-reports --teams
 """.strip(),
 }
 
@@ -610,63 +616,87 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
         prompt_tl_setup()
         return 0
 
-    # ── send-reports (cron job for daily analytics emails) ───────────────
+    # ── send-reports (cron job for daily analytics emails / Teams) ───────
     elif command == "send-reports":
         days = 1
+        use_teams = False
+        target_email: Optional[str] = None
         for i, a in enumerate(args):
             if a == "--days" and i + 1 < len(args):
                 try:
                     days = int(args[i + 1])
                 except ValueError:
-                    print("[ERROR] --days must be a number")
-                    return 2
+                    print("[ERROR] --days must be a number"); return 2
+            elif a == "--teams":
+                use_teams = True
+            elif a == "--tl-email" and i + 1 < len(args):
+                target_email = args[i + 1].strip().lower()
 
         from agent.database import DatabaseManager
         from agent.analytics import get_tracker
-        from agent.utils.email_notifier import get_notifier
-        from datetime import datetime, date, timedelta
+        from datetime import date, timedelta
 
-        print(f"[INFO] Sending {days}-day analytics reports to all TLs...")
+        mode = "Teams (Power Automate webhooks)" if use_teams else "email"
+        print(f"[INFO] Sending {days}-day analytics reports via {mode}"
+              + (f" to {target_email}..." if target_email else " to all TLs..."))
 
         try:
             db = DatabaseManager()
             tracker = get_tracker(db)
-            notifier = get_notifier()
 
-            # Get all TLs (admins)
             tls = db.get_all_users(role='admin')
+            if target_email:
+                tls = [t for t in tls if (t.get('email') or '').lower() == target_email]
             if not tls:
-                print("[WARN] No TLs found to send reports to")
-                return 0
+                print("[WARN] No TLs matched — nothing to do"); return 0
 
-            # Calculate date range
             end_date = date.today()
             start_date = end_date - timedelta(days=days)
             date_str = f"{start_date} to {end_date}" if days > 1 else str(end_date)
 
             reports_sent = 0
-            for tl in tls:
-                # Get analytics for this TL's projects
-                summary = tracker.get_analytics_summary(days=days)
 
-                if summary.get('total_commits', 0) > 0 or summary.get('developers'):
-                    success = notifier.send_daily_analytics_report(
-                        tl_email=tl['email'],
-                        tl_name=tl['name'],
-                        date=date_str,
-                        summary=summary,
-                        developer_stats=summary.get('developers', [])
+            if use_teams:
+                from agent.utils import teams_notifier
+                for tl in tls:
+                    settings = db.get_report_settings(tl['email'])
+                    url = (settings or {}).get('teams_webhook_url') or ''
+                    if not url:
+                        print(f"  - {tl['email']}: no webhook configured, skipping"); continue
+                    summary = tracker.get_analytics_summary(
+                        viewer_email=tl['email'], viewer_role='admin', days=days
                     )
-                    if success:
+                    result = teams_notifier.send_team_report(
+                        webhook_url=url, tl_name=tl['name'], tl_email=tl['email'],
+                        summary=summary, developer_stats=summary.get('developers', []),
+                        date_label=date_str,
+                    )
+                    if result.get('ok'):
                         reports_sent += 1
-                        print(f"  ✓ Sent report to {tl['email']}")
+                        db.mark_report_sent(tl['email'], end_date)
+                        print(f"  ✓ Sent to {tl['email']} (HTTP {result.get('status')})")
                     else:
-                        print(f"  ✗ Failed to send report to {tl['email']}")
-                else:
-                    print(f"  - No activity to report for {tl['email']}")
+                        print(f"  ✗ Failed {tl['email']}: HTTP {result.get('status')} — "
+                              f"{result.get('body')}")
+            else:
+                from agent.utils.email_notifier import get_notifier
+                notifier = get_notifier()
+                for tl in tls:
+                    summary = tracker.get_analytics_summary(days=days)
+                    if summary.get('total_commits', 0) > 0 or summary.get('developers'):
+                        ok = notifier.send_daily_analytics_report(
+                            tl_email=tl['email'], tl_name=tl['name'],
+                            date=date_str, summary=summary,
+                            developer_stats=summary.get('developers', []),
+                        )
+                        if ok:
+                            reports_sent += 1; print(f"  ✓ Sent report to {tl['email']}")
+                        else:
+                            print(f"  ✗ Failed to send report to {tl['email']}")
+                    else:
+                        print(f"  - No activity to report for {tl['email']}")
 
-            print(f"[INFO] Sent {reports_sent} reports")
-            return 0
+            print(f"[INFO] Sent {reports_sent} reports"); return 0
 
         except Exception as e:
             print(f"[ERROR] Failed to send reports: {e}")

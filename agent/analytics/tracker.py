@@ -656,29 +656,99 @@ class AnalyticsTracker:
             print(f"[Analytics] Error tracking activity: {e}")
             return False
 
+    # Filter preset → (start_date, end_date, label, since_days_for_git)
+    # All presets are computed relative to "today" in the server's local tz.
+    FILTER_PRESETS = {
+        'today':      ('today',      0),
+        'yesterday':  ('yesterday',  1),
+        '7d':         ('last 7 days',  7),
+        '15d':        ('last 15 days', 15),
+        '30d':        ('last 30 days', 30),
+        'last_month': ('last month',   31),
+        'all_time':   ('all time',     3650),  # ~10 years
+    }
+
+    @staticmethod
+    def resolve_filter(filter_key: str) -> Dict[str, Any]:
+        """Turn a UI filter key into concrete date bounds."""
+        today = date.today()
+        if filter_key == 'today':
+            start, end = today, today
+        elif filter_key == 'yesterday':
+            y = today - timedelta(days=1)
+            start, end = y, y
+        elif filter_key == '7d':
+            start, end = today - timedelta(days=7), today
+        elif filter_key == '15d':
+            start, end = today - timedelta(days=15), today
+        elif filter_key == '30d':
+            start, end = today - timedelta(days=30), today
+        elif filter_key == 'last_month':
+            # Previous calendar month, e.g. on Apr 17 → Mar 1 .. Mar 31
+            first_this_month = today.replace(day=1)
+            last_prev = first_this_month - timedelta(days=1)
+            start = last_prev.replace(day=1)
+            end = last_prev
+        elif filter_key == 'all_time':
+            start, end = today - timedelta(days=3650), today
+        else:
+            start, end = today - timedelta(days=7), today
+            filter_key = '7d'
+        days_span = max(1, (end - start).days + 1)
+        return {
+            'key': filter_key,
+            'start_date': start,
+            'end_date': end,
+            'days': days_span,
+            # For git log `--since`, we use a safe upper bound (days_span + 1)
+            'since_days': days_span,
+        }
+
     def get_analytics_summary(self, project_id: Optional[int] = None,
                              user_email: Optional[str] = None,
                              days: int = 7,
-                             branch: Optional[str] = None) -> Dict[str, Any]:
+                             branch: Optional[str] = None,
+                             filter_key: Optional[str] = None,
+                             viewer_email: Optional[str] = None,
+                             viewer_role: Optional[str] = None) -> Dict[str, Any]:
         """Team / project analytics derived from git + project_scans.
 
-        Design (agreed with user):
-          * Commits / current_branch / all_branches: from git log per developer
-            (unique SHAs, deduped across branches).
-          * Issue totals per project: MAX across latest scans of each branch
-            (never sum — same file exists on multiple branches).
-          * Per-developer issues: attributed via file-touch intersection with
-            the LATEST scan of their `current_branch`. Computed per branch too.
+        Role-based scoping:
+          * super_admin: all projects
+          * admin (TL): only projects where viewer_email has role_on_project='admin'
+          * developer: only their own email; all projects they are assigned to
         """
-        end_date = date.today()
-        start_date = end_date - timedelta(days=days)
+        # Resolve filter preset if given (overrides `days`)
+        if filter_key:
+            f = self.resolve_filter(filter_key)
+            start_date = f['start_date']
+            end_date = f['end_date']
+            days = f['since_days']
+            filter_label = f['key']
+        else:
+            end_date = date.today()
+            start_date = end_date - timedelta(days=days)
+            filter_label = f"last {days} days"
 
         try:
-            # ── 1. Determine projects in scope ────────────────────────
+            # ── 1. Determine projects in scope (role-aware) ──────────
             projects_scope: List[Dict[str, Any]] = []
             all_projects = self.db.get_all_projects() if hasattr(self.db, 'get_all_projects') else []
+
             if project_id is not None:
                 projects_scope = [p for p in all_projects if p.get('id') == project_id]
+            elif viewer_role == 'super_admin' or viewer_role is None:
+                projects_scope = list(all_projects)
+            elif viewer_role == 'admin' and viewer_email:
+                # TL: only projects where they are assigned as admin
+                for p in all_projects:
+                    assigns = self.db.get_project_assignments(p['id']) if hasattr(self.db, 'get_project_assignments') else []
+                    if any(a.get('user_email') == viewer_email and a.get('role_on_project') == 'admin' for a in assigns):
+                        projects_scope.append(p)
+            elif viewer_role == 'developer' and viewer_email:
+                # Developer: only projects they're assigned to; and clamp user_email to self
+                user_email = viewer_email
+                projects_scope = self.db.get_user_projects(viewer_email) if hasattr(self.db, 'get_user_projects') else []
             else:
                 projects_scope = list(all_projects)
 
@@ -878,7 +948,10 @@ class AnalyticsTracker:
                 'developers': developers,
                 'project_summary': project_issue_summary,    # per-project, per-branch breakdown
                 'period': f"{start_date} to {end_date}",
+                'filter': filter_key or f"{days}d",
+                'filter_label': filter_label,
                 'aggregation': 'max_across_branches',
+                'viewer_role': viewer_role,
             }
         except Exception as e:
             import traceback

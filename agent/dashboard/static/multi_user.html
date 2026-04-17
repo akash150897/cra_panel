@@ -1059,7 +1059,17 @@
     }
 
     // ── Analytics View ──────────────────────────────────────────
-    let analyticsDays = 7, analyticsBranch = 'all', analyticsData = null;
+    let analyticsFilter = '7d', analyticsBranch = 'all', analyticsData = null;
+    let analyticsScanning = false;
+    const ANALYTICS_FILTER_OPTIONS = [
+      { key: 'today',      label: 'Today' },
+      { key: 'yesterday',  label: 'Yesterday' },
+      { key: '7d',         label: '7 days' },
+      { key: '15d',        label: '15 days' },
+      { key: '30d',        label: '30 days' },
+      { key: 'last_month', label: 'Last Month' },
+      { key: 'all_time',   label: 'All Time' },
+    ];
 
     async function loadAnalyticsView(panel) {
       const isDev = currentRole === 'developer';
@@ -1072,14 +1082,18 @@
             <h2 class="text-lg font-bold text-white">${isDev ? 'My Activity' : 'Team Analytics'}</h2>
             <div class="flex items-center gap-2">
               ${!isDev ? `<select id="analyticsBranch" onchange="changeAnalyticsBranch(this.value)" class="search-input rounded-lg px-3 py-1.5 text-xs text-white"><option value="all" ${analyticsBranch==='all'?'selected':''}>All Branches</option></select>` : ''}
-              <select id="analyticsDays" onchange="changeAnalyticsDays(this.value)" class="search-input rounded-lg px-3 py-1.5 text-xs text-white">
-                <option value="7" ${analyticsDays===7?'selected':''}>7 days</option>
-                <option value="14" ${analyticsDays===14?'selected':''}>14 days</option>
-                <option value="30" ${analyticsDays===30?'selected':''}>30 days</option>
-                <option value="90" ${analyticsDays===90?'selected':''}>90 days</option>
-              </select>
-              <button onclick="refreshAnalytics()" class="btn px-3 py-1.5 bg-white/5 text-gray-300 rounded-lg hover:bg-white/10 text-xs border border-border-subtle">Refresh</button>
+              <span id="analyticsScanStatus" class="hidden text-[11px] px-2.5 py-1 rounded-full bg-accent-blue/10 text-accent-blue border border-accent-blue/20"></span>
+              <button onclick="refreshAnalytics(false)" class="btn px-3 py-1.5 bg-white/5 text-gray-300 rounded-lg hover:bg-white/10 text-xs border border-border-subtle">Refresh</button>
+              <button onclick="refreshAnalytics(true)" title="Force a full rescan of every branch in scope — slower" class="btn px-3 py-1.5 bg-accent-purple/10 text-accent-purple rounded-lg hover:bg-accent-purple/20 text-xs border border-accent-purple/20">Force Rescan</button>
             </div>
+          </div>
+          <div id="analyticsFilterPills" class="flex flex-wrap items-center gap-1.5 mb-3">
+            ${ANALYTICS_FILTER_OPTIONS.map(opt => `
+              <button onclick="changeAnalyticsFilter('${opt.key}')"
+                      class="filter-btn px-3 py-1.5 text-[11px] rounded-lg border transition ${analyticsFilter===opt.key ? 'bg-accent-blue/15 text-accent-blue border-accent-blue/30' : 'bg-white/5 text-gray-400 border-border-subtle hover:bg-white/10'}">
+                ${opt.label}
+              </button>
+            `).join('')}
           </div>
           <p class="text-[11px] text-gray-500 mb-5" id="analyticsScope">Scope: ${branchHelpText}</p>
           <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
@@ -1113,18 +1127,78 @@
             <div id="activityChart" class="h-48 flex items-center justify-center text-gray-600 text-xs">Chart visualization coming soon</div>
           </div>
         </div>`;
+      // Fast initial render from existing scans, then kick off smart background auto-scan
       await fetchAnalyticsData();
+      refreshAnalytics(false);
     }
 
-    function changeAnalyticsDays(d) { analyticsDays = parseInt(d); refreshAnalytics(); }
-    function changeAnalyticsBranch(b) { analyticsBranch = b; refreshAnalytics(); }
-    async function refreshAnalytics() { await fetchAnalyticsData(); }
+    function changeAnalyticsFilter(key) {
+      if (analyticsFilter === key) return;
+      analyticsFilter = key;
+      // Re-render filter pills active state
+      const container = document.getElementById('analyticsFilterPills');
+      if (container) {
+        container.innerHTML = ANALYTICS_FILTER_OPTIONS.map(opt => `
+          <button onclick="changeAnalyticsFilter('${opt.key}')"
+                  class="filter-btn px-3 py-1.5 text-[11px] rounded-lg border transition ${analyticsFilter===opt.key ? 'bg-accent-blue/15 text-accent-blue border-accent-blue/30' : 'bg-white/5 text-gray-400 border-border-subtle hover:bg-white/10'}">
+            ${opt.label}
+          </button>`).join('');
+      }
+      refreshAnalytics(false);
+    }
+    function changeAnalyticsBranch(b) { analyticsBranch = b; refreshAnalytics(false); }
+
+    function setAnalyticsScanStatus(text, variant) {
+      const el = document.getElementById('analyticsScanStatus');
+      if (!el) return;
+      if (!text) { el.classList.add('hidden'); return; }
+      el.classList.remove('hidden');
+      el.textContent = text;
+      el.className = `text-[11px] px-2.5 py-1 rounded-full border ${
+        variant === 'error' ? 'bg-accent-red/10 text-accent-red border-accent-red/20' :
+        variant === 'done'  ? 'bg-accent-green/10 text-accent-green border-accent-green/20' :
+                              'bg-accent-blue/10 text-accent-blue border-accent-blue/20'}`;
+    }
+
+    async function refreshAnalytics(force) {
+      // 1. Show last-known data immediately (fast)
+      await fetchAnalyticsData();
+      // 2. Kick off smart auto-scan in the background (stale branches only, or all if force)
+      if (analyticsScanning) return;
+      analyticsScanning = true;
+      setAnalyticsScanStatus(force ? 'Rescanning all branches…' : 'Checking for fresh data…');
+      try {
+        const res = await fetch('/api/analytics/auto-scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filter: analyticsFilter, force: !!force, stale_minutes: 30 })
+        });
+        const data = await res.json();
+        if (data.error) {
+          setAnalyticsScanStatus('Auto-scan error', 'error');
+        } else {
+          const rescanned = data.branches_rescanned || 0;
+          if (rescanned > 0) {
+            setAnalyticsScanStatus(`Rescanned ${rescanned} branch${rescanned!==1?'es':''}`, 'done');
+            await fetchAnalyticsData();  // refresh with new data
+          } else {
+            setAnalyticsScanStatus('Up to date', 'done');
+          }
+          setTimeout(() => setAnalyticsScanStatus(''), 3500);
+        }
+      } catch (e) {
+        setAnalyticsScanStatus('Scan failed: ' + e.message, 'error');
+      } finally {
+        analyticsScanning = false;
+      }
+    }
 
     async function fetchAnalyticsData() {
       try {
-        let url = currentRole === 'developer' ? `/api/analytics?user_email=${currentUser.email}&days=${analyticsDays}` : `/api/analytics?days=${analyticsDays}`;
-        if (analyticsBranch !== 'all') url += `&branch=${encodeURIComponent(analyticsBranch)}`;
-        const res = await fetch(url);
+        const params = new URLSearchParams({ filter: analyticsFilter });
+        if (currentRole === 'developer' && currentUser?.email) params.set('user_email', currentUser.email);
+        if (analyticsBranch !== 'all') params.set('branch', analyticsBranch);
+        const res = await fetch(`/api/analytics?${params.toString()}`);
         analyticsData = await res.json();
         document.getElementById('statCommits').textContent = analyticsData.total_commits || 0;
         document.getElementById('statIssues').textContent = analyticsData.total_issues || 0;
@@ -1148,9 +1222,10 @@
                 return `<div class="text-[10px] text-gray-500"><b class="text-gray-300">${p.project_name}</b> — worst: <b class="text-accent-red">${p.max_branch} (${p.max_issues})</b> · all: ${perBranch}</div>`;
               }).join('')
             : '';
+          const winLabel = analyticsData.filter_label || analyticsFilter;
           const headline = analyticsBranch === 'all'
-            ? `Total issues = <b class="text-accent-red">MAX</b> across branches per project, summed across projects. Developer "Issues" = max attributed issues across branches (file-touch based). Window: last ${analyticsDays} days.`
-            : `Filtering to <b class="text-accent-blue">${analyticsBranch}</b> branch only. Last ${analyticsDays} days.`;
+            ? `Total issues = <b class="text-accent-red">MAX</b> across branches per project, summed across projects. Developer "Issues" = max attributed issues across branches (file-touch based). Window: <b>${winLabel}</b>.`
+            : `Filtering to <b class="text-accent-blue">${analyticsBranch}</b> branch only. Window: <b>${winLabel}</b>.`;
           scope.innerHTML = headline + perBranchHint;
         }
 
@@ -1219,35 +1294,119 @@
       } catch (e) { console.error('Analytics error:', e); }
     }
 
-    // Show all branches for a developer in a modal
+    // Show detailed drill-down for a developer
     function showBranchDetails(email) {
       const dev = (analyticsData?.developers || []).find(d => d.email === email);
       if (!dev) return;
       const stats = dev.branch_stats || [];
-      showModal('branchDetailsModal', `
-        <h3 class="text-lg font-bold text-white mb-1">${dev.name}'s Branches</h3>
-        <p class="text-xs text-gray-500 mb-4">All branches with activity in the last ${analyticsDays} days</p>
-        <div class="space-y-2 max-h-[400px] overflow-y-auto">
-          ${stats.map((b, i) => `
-            <div class="card p-3 flex items-center justify-between ${i===0 ? 'border-accent-green/30' : ''}">
-              <div class="flex items-center gap-2">
-                ${i===0 ? '<div class="w-1.5 h-1.5 rounded-full bg-accent-green pulse-dot"></div>' : '<div class="w-1.5 h-1.5"></div>'}
-                <div>
-                  <div class="text-sm font-medium ${i===0 ? 'text-accent-green' : 'text-white'}">${b.name}${i===0 ? ' <span class="text-[10px] opacity-80">(current)</span>' : ''}</div>
-                  <div class="text-[10px] text-gray-500">Last activity: ${b.last_date || 'unknown'}</div>
+      // Group branches by project
+      const byProject = {};
+      stats.forEach(b => {
+        const key = b.project_id || 0;
+        if (!byProject[key]) byProject[key] = { project_id: key, project_name: b.project_name || 'Unknown', branches: [] };
+        byProject[key].branches.push(b);
+      });
+      const projectGroups = Object.values(byProject);
+
+      // Header stats cards
+      const statsCards = `
+        <div class="grid grid-cols-4 gap-2 mb-4">
+          <div class="card p-3 text-center"><div class="text-lg font-bold text-white">${dev.commits || 0}</div><div class="text-[10px] text-gray-500">Commits</div></div>
+          <div class="card p-3 text-center"><div class="text-lg font-bold text-accent-red">${dev.issues || 0}</div><div class="text-[10px] text-gray-500">Issues (worst)</div></div>
+          <div class="card p-3 text-center"><div class="text-lg font-bold text-accent-green">${dev.quality_score || 0}%</div><div class="text-[10px] text-gray-500">Quality</div></div>
+          <div class="card p-3 text-center"><div class="text-lg font-bold text-white">${dev.branch_count || 0}</div><div class="text-[10px] text-gray-500">Branches</div></div>
+        </div>
+        <div class="grid grid-cols-3 gap-2 mb-4 text-[10px] text-gray-400">
+          <div class="card p-2"><b class="text-accent-green">+${dev.lines_added||0}</b> lines added</div>
+          <div class="card p-2"><b class="text-accent-red">-${dev.lines_removed||0}</b> lines removed</div>
+          <div class="card p-2"><b class="text-white">${dev.files_touched||0}</b> files touched</div>
+        </div>`;
+
+      // Per-project, per-branch breakdown
+      const projectBlocks = projectGroups.map(pg => {
+        const rows = pg.branches.map((b, i) => {
+          const isCurrent = b.name === dev.current_branch;
+          const evwiBreakdown = `<span class="mono text-[10px]">
+            ${b.errors>0?`<span class="text-accent-red">E:${b.errors}</span>`:''}
+            ${b.warnings>0?`<span class="text-accent-yellow ml-1">W:${b.warnings}</span>`:''}
+            ${b.infos>0?`<span class="text-accent-blue ml-1">I:${b.infos}</span>`:''}
+          </span>`;
+          const scanAge = b.scanned_at ? `<span class="text-[9px] text-gray-600">scanned ${formatRelativeDate(b.scanned_at)}</span>` : '<span class="text-[9px] text-accent-yellow">not scanned</span>';
+          return `
+            <div class="card p-3 ${isCurrent ? 'border-accent-green/30 bg-accent-green/5' : ''}">
+              <div class="flex items-center justify-between gap-3">
+                <div class="flex items-center gap-2 min-w-0">
+                  ${isCurrent ? '<div class="w-1.5 h-1.5 rounded-full bg-accent-green pulse-dot shrink-0"></div>' : '<div class="w-1.5 h-1.5 shrink-0"></div>'}
+                  <div class="min-w-0">
+                    <div class="text-sm font-medium ${isCurrent ? 'text-accent-green' : 'text-white'} truncate">${b.name}${isCurrent ? ' <span class="text-[10px] opacity-80">(current)</span>' : ''}</div>
+                    <div class="text-[10px] text-gray-500 flex gap-2 items-center">
+                      <span>Last commit: ${b.last_date || 'unknown'}</span>
+                      ${scanAge}
+                    </div>
+                  </div>
+                </div>
+                <div class="flex gap-3 text-xs shrink-0">
+                  <span class="text-gray-400">Commits: <b class="text-white">${b.commits||0}</b></span>
+                  <span class="${(b.issues||0)>0?'text-accent-red':'text-gray-400'}">Issues: <b>${b.issues||0}</b> ${evwiBreakdown}</span>
+                  ${b.quality !== null && b.quality !== undefined ? `<span class="text-gray-400">Quality: <b class="text-white">${b.quality}%</b></span>` : ''}
+                  <button onclick="closeModal('branchDetailsModal'); openProjectReviewBranch(${pg.project_id}, '${b.name.replace(/'/g,"\\'")}')"
+                          class="text-accent-blue hover:text-white text-[10px] underline">View Code</button>
                 </div>
               </div>
-              <div class="flex gap-3 text-xs">
-                <span class="text-gray-400">Commits: <b class="text-white">${b.commits}</b></span>
-                <span class="${b.issues>0?'text-accent-red':'text-gray-400'}">Issues: <b>${b.issues}</b></span>
-                ${b.quality !== null ? `<span class="text-gray-400">Quality: <b class="text-white">${b.quality}%</b></span>` : ''}
-              </div>
-            </div>`).join('')}
+            </div>`;
+        }).join('');
+        return `
+          <div class="mb-4">
+            <div class="flex items-center gap-2 mb-2 px-1">
+              <svg class="w-3.5 h-3.5 text-accent-blue" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+              <span class="text-sm font-semibold text-white">${pg.project_name}</span>
+              <span class="text-[10px] text-gray-500">${pg.branches.length} branch${pg.branches.length!==1?'es':''}</span>
+            </div>
+            <div class="space-y-1.5">${rows}</div>
+          </div>`;
+      }).join('');
+
+      const empty = !stats.length
+        ? `<div class="card p-6 text-center">
+             <div class="text-accent-yellow text-sm mb-1">No activity in this window</div>
+             <div class="text-[11px] text-gray-500">Try widening the filter (e.g. <b>All Time</b>) or click <b>Force Rescan</b> to refresh every branch.</div>
+           </div>`
+        : projectBlocks;
+
+      showModal('branchDetailsModal', `
+        <div class="flex items-center justify-between mb-1">
+          <h3 class="text-lg font-bold text-white">${dev.name}</h3>
+          <span class="text-[11px] text-gray-500 mono">${dev.email}</span>
         </div>
-        <div class="mt-4 flex justify-end">
+        <p class="text-xs text-gray-500 mb-3">
+          Projects: <b class="text-white">${dev.project_count||0}</b> ·
+          Current branch: <b class="text-accent-green">${dev.current_branch || '—'}</b> ·
+          Window: <b class="text-accent-blue">${analyticsData?.filter_label || analyticsFilter}</b>
+        </p>
+        ${statsCards}
+        <div class="max-h-[400px] overflow-y-auto pr-1">
+          ${empty}
+        </div>
+        <div class="mt-4 flex justify-end gap-2">
+          ${currentRole !== 'developer' ? `<button onclick="closeModal('branchDetailsModal'); viewDeveloperCode('${dev.email}', '${(dev.name||'').replace(/'/g,"\\'")}')" class="btn px-4 py-2 bg-accent-blue/10 text-accent-blue text-sm rounded-lg hover:bg-accent-blue/20 border border-accent-blue/20">Open Project</button>` : ''}
           <button onclick="closeModal('branchDetailsModal')" class="btn px-4 py-2 bg-white/5 text-gray-300 text-sm rounded-lg hover:bg-white/10 border border-border-subtle">Close</button>
         </div>
       `);
+    }
+
+    // Helper: open project review at a specific branch
+    async function openProjectReviewBranch(projectId, branch) {
+      try {
+        const projectsUrl = currentRole === 'super_admin' ? '/api/projects' : '/api/my-projects';
+        const res = await fetch(`${projectsUrl}?t=${Date.now()}`);
+        const projects = await res.json();
+        const p = (projects || []).find(x => x.id === projectId);
+        if (!p) { showNotification('Project not accessible', 'error'); return; }
+        showNotification(`Opening ${p.name || 'project'} @ ${branch}...`, 'info');
+        openProjectReview(p.id, p.path);
+        // Switch to specific branch after scan loads
+        setTimeout(() => { if (typeof switchReviewBranch === 'function') switchReviewBranch(branch, p.id, p.path); }, 800);
+      } catch (e) { showNotification('Error: ' + e.message, 'error'); }
     }
 
     function formatRelativeDate(dateStr) {

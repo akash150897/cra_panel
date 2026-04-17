@@ -5,6 +5,7 @@ Supports multi-user mode with PostgreSQL backend for team collaboration.
 
 import json
 import os
+import subprocess
 import sys
 import threading
 import webbrowser
@@ -648,6 +649,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             project_id = qs.get("project_id", [None])[0]
             days = int(qs.get("days", ["7"])[0])
             branch = qs.get("branch", [None])[0]  # None means all branches
+            filter_key = qs.get("filter", [None])[0]  # today|yesterday|7d|15d|30d|last_month|all_time
             # Developers can only view their own analytics
             if _current_user.get("role") == "developer":
                 user_email = _current_user.get("email")
@@ -666,7 +668,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     project_id=project_id,
                     user_email=user_email,
                     days=days,
-                    branch=branch
+                    branch=branch,
+                    filter_key=filter_key,
+                    viewer_email=_current_user.get("email"),
+                    viewer_role=_current_user.get("role"),
                 )
                 self._json_response(summary)
             except Exception as e:
@@ -960,6 +965,119 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "existing_project": pre_existing
                 })
             except Exception as e:
+                self._json_response({"error": str(e)}, 500)
+            return
+
+        # Smart auto-scan for Analytics page: rescans only stale (project, branch) pairs
+        # in scope of the caller's role. Returns a summary of what was refreshed.
+        if path == "/api/analytics/auto-scan":
+            if not _current_user:
+                self._json_response({"error": "Unauthorized"}, 401)
+                return
+            try:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                from datetime import datetime as _dt
+                from agent.analytics import get_tracker
+                tracker = get_tracker()
+                db = _get_db()
+                role = _current_user.get("role")
+                viewer_email = _current_user.get("email")
+                filter_key = data.get("filter", "7d")
+                force = bool(data.get("force", False))
+                stale_minutes = int(data.get("stale_minutes", 30))
+
+                # Determine in-scope projects (mirror get_analytics_summary logic)
+                all_projects = db.get_all_projects()
+                if role == "super_admin":
+                    projects_scope = list(all_projects)
+                elif role == "admin":
+                    projects_scope = []
+                    for p in all_projects:
+                        assigns = db.get_project_assignments(p['id'])
+                        if any(a.get('user_email') == viewer_email and a.get('role_on_project') == 'admin' for a in assigns):
+                            projects_scope.append(p)
+                else:  # developer — scan their projects so their own stats populate
+                    projects_scope = db.get_user_projects(viewer_email) or []
+
+                # For each project, find branches to (re)scan
+                tasks = []  # (project, project_path, branch)
+                skipped = []
+                for p in projects_scope:
+                    p_path = tracker.ensure_local_clone(p.get('path'), project_id=p['id'])
+                    if not p_path:
+                        skipped.append({"project_id": p['id'], "reason": "clone failed or path missing"})
+                        continue
+                    branches = tracker.list_project_branches(p_path)
+                    if not branches:
+                        skipped.append({"project_id": p['id'], "reason": "no branches"})
+                        continue
+                    # Load existing scans for this project
+                    existing = {s['branch']: s for s in db.get_project_scans(project_id=p['id'])}
+                    for br in branches:
+                        scan = existing.get(br)
+                        need = force or (scan is None)
+                        if not need and scan:
+                            scanned_at = scan.get('scanned_at')
+                            if hasattr(scanned_at, 'timestamp'):
+                                age_min = (_dt.utcnow() - scanned_at).total_seconds() / 60.0
+                            else:
+                                age_min = 99999
+                            if age_min > stale_minutes:
+                                need = True
+                            else:
+                                # Also scan if newer commits exist since scan
+                                try:
+                                    rev = subprocess.run(
+                                        ["git", "-C", p_path, "log",
+                                         f"--since={int(age_min)+1}.minutes.ago",
+                                         f"origin/{br}" if subprocess.run(
+                                             ["git", "-C", p_path, "rev-parse", "--verify", f"origin/{br}"],
+                                             capture_output=True).returncode == 0 else br,
+                                         "--oneline", "-1"],
+                                        capture_output=True, text=True, timeout=10
+                                    )
+                                    if rev.stdout.strip():
+                                        need = True
+                                except Exception:
+                                    pass
+                        if need:
+                            tasks.append((p, p_path, br))
+
+                # Execute scans in a thread pool (limit concurrency to avoid blowup)
+                scanned_ok = []
+                scanned_failed = []
+
+                def _one(task):
+                    p, p_path, br = task
+                    try:
+                        res = self._scan_project_branch(p.get('path'), p['id'], viewer_email, branch=br)
+                        return (p['id'], br, bool(res.get("success")), res.get("error") or "")
+                    except Exception as e:
+                        return (p['id'], br, False, str(e))
+
+                if tasks:
+                    with ThreadPoolExecutor(max_workers=min(4, len(tasks))) as ex:
+                        futs = [ex.submit(_one, t) for t in tasks]
+                        for fu in as_completed(futs):
+                            pid, br, ok, err = fu.result()
+                            if ok:
+                                scanned_ok.append({"project_id": pid, "branch": br})
+                            else:
+                                scanned_failed.append({"project_id": pid, "branch": br, "error": err[:200]})
+
+                self._json_response({
+                    "success": True,
+                    "filter": filter_key,
+                    "projects_in_scope": len(projects_scope),
+                    "branches_rescanned": len(scanned_ok),
+                    "branches_failed": len(scanned_failed),
+                    "scanned": scanned_ok,
+                    "failed": scanned_failed,
+                    "skipped": skipped,
+                })
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
                 self._json_response({"error": str(e)}, 500)
             return
 

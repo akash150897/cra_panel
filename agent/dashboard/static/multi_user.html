@@ -1084,7 +1084,7 @@
           <p class="text-[11px] text-gray-500 mb-5" id="analyticsScope">Scope: ${branchHelpText}</p>
           <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
             <div class="card stat-card blue p-4"><div class="text-2xl font-bold text-white" id="statCommits">-</div><div class="text-xs text-gray-500 mt-1">Commits</div></div>
-            <div class="card stat-card red p-4" title="Aggregated count. Same code on multiple branches is counted per-branch."><div class="text-2xl font-bold text-white" id="statIssues">-</div><div class="text-xs text-gray-500 mt-1" id="statIssuesLabel">Issues</div></div>
+            <div class="card stat-card red p-4" title="MAX issues across branches per project, summed across projects. Never double-counts the same file on multiple branches."><div class="text-2xl font-bold text-white" id="statIssues">-</div><div class="text-xs text-gray-500 mt-1" id="statIssuesLabel">Issues (worst branch)</div></div>
             <div class="card stat-card green p-4"><div class="text-2xl font-bold text-white" id="statQuality">-</div><div class="text-xs text-gray-500 mt-1">Quality Score</div></div>
             <div class="card stat-card yellow p-4"><div class="text-2xl font-bold text-white" id="statEffort">-</div><div class="text-xs text-gray-500 mt-1">Effort Score</div></div>
           </div>
@@ -1097,7 +1097,7 @@
                     <th class="px-4 py-2.5 text-xs font-medium text-gray-400">Developer</th>
                     <th class="px-4 py-2.5 text-xs font-medium text-gray-400 text-center">Projects</th>
                     <th class="px-4 py-2.5 text-xs font-medium text-gray-400 text-center">Commits</th>
-                    <th class="px-4 py-2.5 text-xs font-medium text-gray-400 text-center" title="Total issues across all branches in period">Issues</th>
+                    <th class="px-4 py-2.5 text-xs font-medium text-gray-400 text-center" title="Max issues on files this developer touched (across their active branches). Derived from git log + latest scans — no double-counting.">Issues</th>
                     <th class="px-4 py-2.5 text-xs font-medium text-gray-400 text-center">Quality</th>
                     <th class="px-4 py-2.5 text-xs font-medium text-gray-400">Current Branch</th>
                     <th class="px-4 py-2.5 text-xs font-medium text-gray-400">All Branches (issues)</th>
@@ -1135,15 +1135,23 @@
         const issuesLabel = document.getElementById('statIssuesLabel');
         if (issuesLabel) {
           issuesLabel.textContent = analyticsBranch === 'all'
-            ? `Issues (all branches combined)`
+            ? `Issues (worst branch per project)`
             : `Issues on ${analyticsBranch}`;
         }
         // Update scope explanation
         const scope = document.getElementById('analyticsScope');
         if (scope) {
-          scope.innerHTML = analyticsBranch === 'all'
-            ? `Scope: Issues summed across <b class="text-accent-blue">ALL branches</b> in last ${analyticsDays} days. Use the dropdown to filter by a single branch.`
-            : `Scope: Filtering to <b class="text-accent-blue">${analyticsBranch}</b> branch only in last ${analyticsDays} days.`;
+          const projSummary = analyticsData.project_summary || [];
+          const perBranchHint = projSummary.length
+            ? projSummary.map(p => {
+                const perBranch = (p.branches||[]).map(b => `<span class="mono text-[10px]">${b.branch}:${b.issues}</span>`).join(' · ');
+                return `<div class="text-[10px] text-gray-500"><b class="text-gray-300">${p.project_name}</b> — worst: <b class="text-accent-red">${p.max_branch} (${p.max_issues})</b> · all: ${perBranch}</div>`;
+              }).join('')
+            : '';
+          const headline = analyticsBranch === 'all'
+            ? `Total issues = <b class="text-accent-red">MAX</b> across branches per project, summed across projects. Developer "Issues" = max attributed issues across branches (file-touch based). Window: last ${analyticsDays} days.`
+            : `Filtering to <b class="text-accent-blue">${analyticsBranch}</b> branch only. Last ${analyticsDays} days.`;
+          scope.innerHTML = headline + perBranchHint;
         }
 
         // Populate branch dropdown from actual developer data

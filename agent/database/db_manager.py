@@ -141,6 +141,24 @@ class DatabaseManager:
                 except Exception:
                     pass  # Column might already exist or other migration issues
 
+                # Project scan snapshots — one row per (project, branch); holds LATEST scan.
+                # Used for correct team analytics (no double-counting across branches).
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS project_scans (
+                        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        branch VARCHAR(255) NOT NULL,
+                        scanned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        scanned_by_email VARCHAR(255),
+                        total_issues INTEGER DEFAULT 0,
+                        errors INTEGER DEFAULT 0,
+                        warnings INTEGER DEFAULT 0,
+                        infos INTEGER DEFAULT 0,
+                        files_with_issues JSONB DEFAULT '{}'::jsonb,
+                        quality_score DECIMAL(5,2),
+                        PRIMARY KEY (project_id, branch)
+                    )
+                """)
+
                 # Email notifications log
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS email_notifications (
@@ -419,6 +437,85 @@ class DatabaseManager:
         except Exception as e:
             print(f"[DB Error] respond_to_access_request: {e}")
             return False
+
+    def save_project_scan(self, project_id: int, branch: str, scanned_by_email: str,
+                          violations: List[Dict[str, Any]],
+                          quality_score: Optional[float] = None) -> bool:
+        """Upsert the latest scan snapshot for (project, branch).
+
+        Stores per-file issue counts so analytics can attribute issues to
+        the developers who actually modified each file.
+        """
+        try:
+            import json as _json
+            errors = sum(1 for v in violations if v.get("severity") == "error")
+            warnings = sum(1 for v in violations if v.get("severity") == "warning")
+            infos = sum(1 for v in violations if v.get("severity") == "info")
+
+            # Group violations by normalised file path
+            files_with_issues: Dict[str, Dict[str, int]] = {}
+            for v in violations:
+                fp = (v.get("file") or "").replace("\\", "/").lstrip("./")
+                if not fp:
+                    continue
+                bucket = files_with_issues.setdefault(fp, {
+                    "errors": 0, "warnings": 0, "infos": 0, "total": 0
+                })
+                sev = v.get("severity", "info")
+                if sev == "error":
+                    bucket["errors"] += 1
+                elif sev == "warning":
+                    bucket["warnings"] += 1
+                else:
+                    bucket["infos"] += 1
+                bucket["total"] += 1
+
+            with self.connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO project_scans
+                            (project_id, branch, scanned_at, scanned_by_email,
+                             total_issues, errors, warnings, infos,
+                             files_with_issues, quality_score)
+                        VALUES (%s, %s, CURRENT_TIMESTAMP, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (project_id, branch) DO UPDATE SET
+                            scanned_at = EXCLUDED.scanned_at,
+                            scanned_by_email = EXCLUDED.scanned_by_email,
+                            total_issues = EXCLUDED.total_issues,
+                            errors = EXCLUDED.errors,
+                            warnings = EXCLUDED.warnings,
+                            infos = EXCLUDED.infos,
+                            files_with_issues = EXCLUDED.files_with_issues,
+                            quality_score = EXCLUDED.quality_score
+                    """, (project_id, branch, scanned_by_email,
+                          len(violations), errors, warnings, infos,
+                          _json.dumps(files_with_issues), quality_score))
+                    conn.commit()
+                    return True
+        except Exception as e:
+            print(f"[DB Error] save_project_scan: {e}")
+            return False
+
+    def get_project_scans(self, project_id: Optional[int] = None,
+                          branch: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Fetch latest scan snapshots. Optionally filter by project/branch."""
+        try:
+            with self.connect() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    q = "SELECT * FROM project_scans WHERE 1=1"
+                    params: list = []
+                    if project_id is not None:
+                        q += " AND project_id = %s"
+                        params.append(project_id)
+                    if branch is not None:
+                        q += " AND branch = %s"
+                        params.append(branch)
+                    q += " ORDER BY project_id, branch"
+                    cur.execute(q, params)
+                    return [dict(r) for r in cur.fetchall()]
+        except Exception as e:
+            print(f"[DB Error] get_project_scans: {e}")
+            return []
 
     def log_analytics(self, user_email: str, project_id: int, date: date, **metrics) -> bool:
         """Log or update daily analytics for a developer."""

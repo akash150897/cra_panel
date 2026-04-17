@@ -1318,7 +1318,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         
         return violations
 
-    def _scan_project(self, project_path: str, project_id: int, user_email: str, strip_base: str = None) -> dict:
+    def _scan_project(self, project_path: str, project_id: int, user_email: str, strip_base: str = None, branch: str = "main") -> dict:
         """Run a code review scan on a project and return results.
 
         Args:
@@ -1507,6 +1507,18 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 code_quality_score=quality_score,
                 effort_score=0
             )
+
+            # Save full scan snapshot for correct team-analytics attribution
+            try:
+                db.save_project_scan(
+                    project_id=project_id,
+                    branch=branch or 'main',
+                    scanned_by_email=user_email,
+                    violations=violations,
+                    quality_score=float(quality_score)
+                )
+            except Exception as e:
+                print(f"[Scan] save_project_scan failed: {e}")
             
             return {
                 "success": True,
@@ -1593,7 +1605,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             
             # Use the existing _scan_project logic but with the branch-specific path
             # Pass temp_dir as strip_base so file paths are properly relativized
-            result = self._scan_project(scan_path, project_id, user_email, strip_base=temp_dir or scan_path)
+            result = self._scan_project(scan_path, project_id, user_email, strip_base=temp_dir or scan_path, branch=branch)
             
             # Add branch info to result
             if isinstance(result, dict) and result.get("success"):

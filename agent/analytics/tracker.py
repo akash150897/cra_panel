@@ -1,4 +1,5 @@
 """Analytics tracker for monitoring developer activity."""
+import json
 import os
 import re
 import subprocess
@@ -314,6 +315,145 @@ class AnalyticsTracker:
             print(f"[Analytics] get_commits_for_user_on_branch error on {branch}: {e}")
             return []
 
+    # ──────────────────────────────────────────────────────────────
+    # Git-derived developer activity (authoritative source of truth)
+    # ──────────────────────────────────────────────────────────────
+
+    def get_files_touched_by_user(self, project_path: str, user_email: str,
+                                   since_days: int = 7,
+                                   branch: Optional[str] = None) -> set:
+        """Return a SET of normalized file paths modified by the user.
+
+        Uses `git log --name-only --author=<email>`. When branch is given,
+        limits log to that branch; otherwise scans across the repo.
+        """
+        if not project_path or not os.path.exists(project_path):
+            return set()
+        try:
+            since = f"{since_days}.days.ago"
+            cmd = ["git", "-C", project_path, "log",
+                   f"--author={user_email}", f"--since={since}",
+                   "--no-merges", "--name-only", "--pretty=format:"]
+            if branch:
+                # Prefer remote ref if present
+                ref_check = subprocess.run(
+                    ["git", "-C", project_path, "rev-parse", "--verify", f"origin/{branch}"],
+                    capture_output=True, text=True, timeout=5
+                )
+                ref = f"origin/{branch}" if ref_check.returncode == 0 else branch
+                # Insert ref before filters: git log <ref> --author=...
+                cmd = ["git", "-C", project_path, "log", ref,
+                       f"--author={user_email}", f"--since={since}",
+                       "--no-merges", "--name-only", "--pretty=format:"]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if result.returncode != 0:
+                return set()
+            files = set()
+            for line in result.stdout.splitlines():
+                p = line.strip().replace("\\", "/").lstrip("./")
+                if p:
+                    files.add(p)
+            return files
+        except Exception as e:
+            print(f"[Analytics] get_files_touched_by_user error: {e}")
+            return set()
+
+    def get_developer_activity(self, project_path: str, user_email: str,
+                               since_days: int = 7) -> Dict[str, Any]:
+        """Aggregate a developer's git activity across ALL branches.
+
+        Returns:
+            {
+              "total_commits": int,            # unique SHAs authored in window
+              "lines_added": int,
+              "lines_removed": int,
+              "files_touched": int,
+              "current_branch": str|None,      # branch of most-recent commit
+              "latest_commit_date": str|None,  # ISO
+              "branches": [                    # per-branch breakdown
+                 {"name": str, "commits": int, "last_date": str,
+                  "first_date": str, "unique_commits": int}
+              ]
+            }
+
+        Commits that appear on multiple branches are NOT double-counted in
+        `total_commits`; each branch row shows how many of its commits were
+        authored by the user (which may overlap with other branches).
+        """
+        empty = {
+            "total_commits": 0, "lines_added": 0, "lines_removed": 0,
+            "files_touched": 0, "current_branch": None,
+            "latest_commit_date": None, "branches": [],
+        }
+        if not project_path or not os.path.exists(project_path):
+            return empty
+
+        try:
+            subprocess.run(
+                ["git", "-C", project_path, "fetch", "--all", "--prune"],
+                capture_output=True, text=True, timeout=30
+            )
+        except Exception:
+            pass
+
+        all_branches = self.list_project_branches(project_path)
+        if not all_branches:
+            return empty
+
+        # Track unique SHAs across branches → dedup total commits/lines
+        seen_shas: Dict[str, Dict[str, Any]] = {}
+        per_branch: List[Dict[str, Any]] = []
+
+        for br in all_branches:
+            commits = self.get_commits_for_user_on_branch(
+                project_path, br, user_email, since_days=since_days
+            )
+            if not commits:
+                continue
+            dates = sorted([c.get("date", "") for c in commits if c.get("date")])
+            last_date = dates[-1] if dates else None
+            first_date = dates[0] if dates else None
+            per_branch.append({
+                "name": br,
+                "commits": len(commits),
+                "unique_commits": len({c["hash"] for c in commits if c.get("hash")}),
+                "last_date": last_date,
+                "first_date": first_date,
+            })
+            for c in commits:
+                sha = c.get("hash")
+                if not sha or sha in seen_shas:
+                    continue
+                seen_shas[sha] = c
+
+        total_commits = len(seen_shas)
+        lines_added = sum(c.get("insertions", 0) for c in seen_shas.values())
+        lines_removed = sum(c.get("deletions", 0) for c in seen_shas.values())
+        files_touched = len(self.get_files_touched_by_user(
+            project_path, user_email, since_days=since_days
+        ))
+
+        # Current branch = branch containing the user's latest commit
+        current_branch = None
+        latest_date = None
+        for b in per_branch:
+            if b["last_date"] and (latest_date is None or b["last_date"] > latest_date):
+                latest_date = b["last_date"]
+                current_branch = b["name"]
+
+        # Sort branches most-recent first
+        per_branch.sort(key=lambda b: (b.get("last_date") or ""), reverse=True)
+
+        return {
+            "total_commits": total_commits,
+            "lines_added": lines_added,
+            "lines_removed": lines_removed,
+            "files_touched": files_touched,
+            "current_branch": current_branch,
+            "latest_commit_date": latest_date,
+            "branches": per_branch,
+        }
+
     def backfill_user_history(self, project_id: int, project_path: str,
                               user_email: str, since_days: int = 365) -> Dict[str, Any]:
         """Walk git history for a user across ALL branches and populate
@@ -465,127 +605,236 @@ class AnalyticsTracker:
                              user_email: Optional[str] = None,
                              days: int = 7,
                              branch: Optional[str] = None) -> Dict[str, Any]:
-        """Get analytics summary for the specified period."""
+        """Team / project analytics derived from git + project_scans.
+
+        Design (agreed with user):
+          * Commits / current_branch / all_branches: from git log per developer
+            (unique SHAs, deduped across branches).
+          * Issue totals per project: MAX across latest scans of each branch
+            (never sum — same file exists on multiple branches).
+          * Per-developer issues: attributed via file-touch intersection with
+            the LATEST scan of their `current_branch`. Computed per branch too.
+        """
         end_date = date.today()
         start_date = end_date - timedelta(days=days)
 
         try:
-            data = self.db.get_analytics(
-                user_email=user_email,
-                project_id=project_id,
-                start_date=start_date,
-                end_date=end_date,
-                branch=branch
-            )
+            # ── 1. Determine projects in scope ────────────────────────
+            projects_scope: List[Dict[str, Any]] = []
+            all_projects = self.db.get_all_projects() if hasattr(self.db, 'get_all_projects') else []
+            if project_id is not None:
+                projects_scope = [p for p in all_projects if p.get('id') == project_id]
+            else:
+                projects_scope = list(all_projects)
 
-            if not data:
-                return {
-                    'total_commits': 0,
-                    'total_issues': 0,
-                    'avg_quality': 0,
-                    'avg_effort': 0,
-                    'developers': []
-                }
-
-            # Aggregate stats
-            total_commits = sum(d['commits_count'] for d in data)
-            total_issues = sum(d['issues_found'] for d in data)
-
-            quality_scores = [d['code_quality_score'] for d in data if d['code_quality_score']]
-            effort_scores = [d['effort_score'] for d in data if d['effort_score']]
-
-            avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else 0
-            avg_effort = sum(effort_scores) / len(effort_scores) if effort_scores else 0
-
-            # Group by user and track per-branch stats
-            by_user = {}
-            for d in data:
-                email = d['user_email']
-                if email not in by_user:
-                    by_user[email] = {
-                        'name': d['user_name'],
-                        'email': email,
-                        'commits': 0,
-                        'issues': 0,
-                        'quality_scores': [],
-                        'effort_scores': [],
-                        # Per-branch breakdown: branch -> {issues, commits, last_date, quality}
-                        'branch_stats': {},
-                        'projects': {}  # project_id -> project_name
+            # ── 2. Determine developers in scope ──────────────────────
+            #    Union of: users assigned to scoped projects, plus `user_email` filter.
+            dev_emails: Dict[str, Dict[str, Any]] = {}
+            for p in projects_scope:
+                assigns = self.db.get_project_assignments(p['id']) if hasattr(self.db, 'get_project_assignments') else []
+                for a in assigns:
+                    em = a.get('user_email')
+                    if not em:
+                        continue
+                    if user_email and em != user_email:
+                        continue
+                    if em not in dev_emails:
+                        dev_emails[em] = {
+                            'name': a.get('name') or em,
+                            'email': em,
+                            'projects': {},  # project_id -> name
+                        }
+                    dev_emails[em]['projects'][p['id']] = p.get('name', f"project_{p['id']}")
+            if user_email and user_email not in dev_emails:
+                # Developer not formally assigned but explicitly requested
+                u = self.db.get_user_by_email(user_email) if hasattr(self.db, 'get_user_by_email') else None
+                if u:
+                    dev_emails[user_email] = {
+                        'name': u.get('name') or user_email,
+                        'email': user_email,
+                        'projects': {p['id']: p.get('name', '') for p in projects_scope},
                     }
-                by_user[email]['commits'] += d['commits_count']
-                by_user[email]['issues'] += d['issues_found']
-                if d['code_quality_score']:
-                    by_user[email]['quality_scores'].append(d['code_quality_score'])
-                if d['effort_score']:
-                    by_user[email]['effort_scores'].append(d['effort_score'])
-                br = d.get('branch') or 'main'
-                if br not in by_user[email]['branch_stats']:
-                    by_user[email]['branch_stats'][br] = {
-                        'name': br,
-                        'issues': 0,
-                        'commits': 0,
-                        'quality': None,
-                        'last_date': None
-                    }
-                bs = by_user[email]['branch_stats'][br]
-                bs['issues'] += d['issues_found']
-                bs['commits'] += d['commits_count']
-                if d['code_quality_score']:
-                    bs['quality'] = float(d['code_quality_score'])
-                # Track most recent activity date per branch
-                d_date = d.get('date')
-                if d_date:
-                    d_date_str = d_date.isoformat() if hasattr(d_date, 'isoformat') else str(d_date)
-                    if bs['last_date'] is None or d_date_str > bs['last_date']:
-                        bs['last_date'] = d_date_str
-                if d.get('project_name'):
-                    by_user[email]['projects'][d.get('project_id', 0)] = d['project_name']
 
-            developers = []
-            for user_data in by_user.values():
-                quality_list = user_data['quality_scores']
-                effort_list = user_data['effort_scores']
-                projects_list = list(user_data['projects'].values())
-                # Sort branches by last_date DESC (most recent first). Current = first.
-                branch_stats_list = sorted(
-                    user_data['branch_stats'].values(),
-                    key=lambda b: (b['last_date'] or ''),
-                    reverse=True
-                )
-                current_branch = branch_stats_list[0]['name'] if branch_stats_list else None
-                branches_list = [b['name'] for b in branch_stats_list]
-                developers.append({
-                    'name': user_data['name'],
-                    'email': user_data['email'],
-                    'commits': user_data['commits'],
-                    'issues': user_data['issues'],
-                    'quality_score': round(sum(quality_list) / len(quality_list), 1) if quality_list else 0,
-                    'effort_score': round(sum(effort_list) / len(effort_list), 1) if effort_list else 0,
-                    'branches': branches_list,
-                    'branch_count': len(branches_list),
-                    'current_branch': current_branch,
-                    'branch_stats': branch_stats_list,  # [{name, issues, commits, quality, last_date}, ...]
-                    'projects': projects_list,
-                    'project_count': len(projects_list)
+            # ── 3. Pre-load latest scans per (project, branch) ────────
+            scans_by_project: Dict[int, List[Dict[str, Any]]] = {}
+            for p in projects_scope:
+                scans = self.db.get_project_scans(project_id=p['id']) if hasattr(self.db, 'get_project_scans') else []
+                scans_by_project[p['id']] = scans
+
+            # ── 4. Project-level issue totals (MAX across branches) ──
+            #     Also collect per-branch breakdown for UI transparency.
+            project_issue_summary: List[Dict[str, Any]] = []
+            total_issues_max = 0
+            total_errors_max = 0
+            total_warnings_max = 0
+            total_infos_max = 0
+            for p in projects_scope:
+                scans = scans_by_project.get(p['id'], [])
+                if not scans:
+                    continue
+                # Optional branch filter
+                scans_filt = [s for s in scans if (branch is None or s['branch'] == branch)]
+                if not scans_filt:
+                    continue
+                max_scan = max(scans_filt, key=lambda s: s.get('total_issues', 0))
+                total_issues_max += int(max_scan.get('total_issues', 0) or 0)
+                total_errors_max += int(max_scan.get('errors', 0) or 0)
+                total_warnings_max += int(max_scan.get('warnings', 0) or 0)
+                total_infos_max += int(max_scan.get('infos', 0) or 0)
+                project_issue_summary.append({
+                    'project_id': p['id'],
+                    'project_name': p.get('name'),
+                    'max_branch': max_scan['branch'],
+                    'max_issues': int(max_scan.get('total_issues', 0) or 0),
+                    'branches': [
+                        {
+                            'branch': s['branch'],
+                            'issues': int(s.get('total_issues', 0) or 0),
+                            'errors': int(s.get('errors', 0) or 0),
+                            'warnings': int(s.get('warnings', 0) or 0),
+                            'infos': int(s.get('infos', 0) or 0),
+                            'scanned_at': (s.get('scanned_at').isoformat()
+                                           if hasattr(s.get('scanned_at'), 'isoformat')
+                                           else str(s.get('scanned_at'))),
+                        }
+                        for s in scans_filt
+                    ],
                 })
 
+            # ── 5. Per-developer git activity + attributed issues ────
+            developers: List[Dict[str, Any]] = []
+            total_unique_commits = 0
+            quality_scores: List[float] = []
+
+            for email, meta in dev_emails.items():
+                dev_total_commits = 0
+                dev_lines_added = 0
+                dev_lines_removed = 0
+                dev_files_touched = 0
+                dev_branch_stats: List[Dict[str, Any]] = []
+                dev_current_branch: Optional[str] = None
+                dev_latest_date: Optional[str] = None
+                # For "Issues" we use MAX across branches of attributed issues.
+                dev_attributed_issues_max = 0
+                dev_quality_weighted: List[float] = []
+
+                for p in projects_scope:
+                    if p['id'] not in meta['projects']:
+                        continue
+                    p_path = p.get('path')
+                    if not p_path or not os.path.exists(p_path):
+                        continue
+                    act = self.get_developer_activity(p_path, email, since_days=days)
+                    dev_total_commits += act.get('total_commits', 0)
+                    dev_lines_added += act.get('lines_added', 0)
+                    dev_lines_removed += act.get('lines_removed', 0)
+                    dev_files_touched += act.get('files_touched', 0)
+
+                    # Track current branch across projects: pick the latest
+                    if act.get('latest_commit_date'):
+                        if dev_latest_date is None or act['latest_commit_date'] > dev_latest_date:
+                            dev_latest_date = act['latest_commit_date']
+                            dev_current_branch = act.get('current_branch')
+
+                    # For each branch the dev has commits on, intersect touched
+                    # files with the latest scan's files_with_issues on THAT branch.
+                    scans_map = {s['branch']: s for s in scans_by_project.get(p['id'], [])}
+                    for br_info in act.get('branches', []):
+                        br_name = br_info['name']
+                        touched = self.get_files_touched_by_user(
+                            p_path, email, since_days=days, branch=br_name
+                        )
+                        scan = scans_map.get(br_name)
+                        attributed = 0
+                        attr_errors = attr_warns = attr_infos = 0
+                        if scan and touched:
+                            files_with_issues = scan.get('files_with_issues') or {}
+                            if isinstance(files_with_issues, str):
+                                try:
+                                    files_with_issues = json.loads(files_with_issues)
+                                except Exception:
+                                    files_with_issues = {}
+                            for fp in touched:
+                                bucket = files_with_issues.get(fp)
+                                if bucket:
+                                    attributed += int(bucket.get('total', 0))
+                                    attr_errors += int(bucket.get('errors', 0))
+                                    attr_warns += int(bucket.get('warnings', 0))
+                                    attr_infos += int(bucket.get('infos', 0))
+                        dev_branch_stats.append({
+                            'name': br_name,
+                            'project_id': p['id'],
+                            'project_name': p.get('name'),
+                            'commits': br_info.get('commits', 0),
+                            'last_date': br_info.get('last_date'),
+                            'first_date': br_info.get('first_date'),
+                            'issues': attributed,
+                            'errors': attr_errors,
+                            'warnings': attr_warns,
+                            'infos': attr_infos,
+                            'quality': (float(scan['quality_score']) if scan and scan.get('quality_score') is not None else None),
+                            'scanned_at': (scan.get('scanned_at').isoformat() if scan and hasattr(scan.get('scanned_at'), 'isoformat')
+                                            else (str(scan.get('scanned_at')) if scan else None)),
+                        })
+                        if attributed > dev_attributed_issues_max:
+                            dev_attributed_issues_max = attributed
+                        if scan and scan.get('quality_score') is not None:
+                            dev_quality_weighted.append(float(scan['quality_score']))
+
+                total_unique_commits += dev_total_commits
+
+                # Sort branches by recency
+                dev_branch_stats.sort(key=lambda b: (b.get('last_date') or ''), reverse=True)
+                branches_list = [b['name'] for b in dev_branch_stats]
+                dev_quality = round(sum(dev_quality_weighted) / len(dev_quality_weighted), 1) if dev_quality_weighted else 0
+                if dev_quality:
+                    quality_scores.append(dev_quality)
+
+                developers.append({
+                    'name': meta['name'],
+                    'email': email,
+                    'commits': dev_total_commits,
+                    'lines_added': dev_lines_added,
+                    'lines_removed': dev_lines_removed,
+                    'files_touched': dev_files_touched,
+                    'issues': dev_attributed_issues_max,   # MAX across branches
+                    'quality_score': dev_quality,
+                    'effort_score': 0,  # (legacy — kept for compat)
+                    'current_branch': dev_current_branch,
+                    'latest_commit_date': dev_latest_date,
+                    'branches': branches_list,
+                    'branch_count': len(branches_list),
+                    'branch_stats': dev_branch_stats,
+                    'projects': list(meta['projects'].values()),
+                    'project_count': len(meta['projects']),
+                })
+
+            avg_quality = round(sum(quality_scores) / len(quality_scores), 1) if quality_scores else 0
+
             return {
-                'total_commits': total_commits,
-                'total_issues': total_issues,
-                'avg_quality': round(avg_quality, 1),
-                'avg_effort': round(avg_effort, 1),
+                'total_commits': total_unique_commits,
+                'total_issues': total_issues_max,            # MAX across branches (project totals)
+                'total_errors': total_errors_max,
+                'total_warnings': total_warnings_max,
+                'total_infos': total_infos_max,
+                'avg_quality': avg_quality,
+                'avg_effort': 0,
                 'developers': developers,
-                'period': f"{start_date} to {end_date}"
+                'project_summary': project_issue_summary,    # per-project, per-branch breakdown
+                'period': f"{start_date} to {end_date}",
+                'aggregation': 'max_across_branches',
             }
         except Exception as e:
+            import traceback
             print(f"[Analytics] Error getting summary: {e}")
+            traceback.print_exc()
             return {
                 'total_commits': 0,
                 'total_issues': 0,
                 'avg_quality': 0,
                 'avg_effort': 0,
                 'developers': [],
+                'project_summary': [],
                 'error': str(e)
             }
 

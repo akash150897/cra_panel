@@ -980,16 +980,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 if not project:
                     self._json_response({"error": "Project not found"}, 404)
                     return
-                project_path = project.get('path')
-                if not project_path or not os.path.exists(project_path):
-                    self._json_response({
-                        "error": f"Project path not accessible: {project_path}. "
-                                 "Clone the repo locally (or have each dev run `cra scan` inside it) then retry."
-                    }, 400)
-                    return
-
                 from agent.analytics import get_tracker
                 tracker = get_tracker()
+                # Resolve remote URL → cached local clone
+                project_path = tracker.ensure_local_clone(project.get('path'), project_id=project_id)
+                if not project_path or not os.path.exists(project_path):
+                    self._json_response({
+                        "error": f"Project path not accessible: {project.get('path')}. "
+                                 "Clone the repo locally (or check that the dashboard host has git access to the remote)."
+                    }, 400)
+                    return
                 # Determine which users to backfill
                 target_email = data.get("user_email")
                 if target_email:
@@ -1059,17 +1059,18 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 backfill_summary = None
                 if success:
                     try:
-                        project_path = None
+                        raw_path = None
                         for p in projects:
                             if p['id'] == data.get("project_id"):
-                                project_path = p.get('path')
+                                raw_path = p.get('path')
                                 break
-                        if project_path and os.path.exists(project_path):
-                            from agent.analytics import get_tracker
-                            tracker = get_tracker()
+                        from agent.analytics import get_tracker
+                        tracker = get_tracker()
+                        local_path = tracker.ensure_local_clone(raw_path, project_id=data.get("project_id"))
+                        if local_path and os.path.exists(local_path):
                             backfill_summary = tracker.backfill_user_history(
                                 project_id=data.get("project_id"),
-                                project_path=project_path,
+                                project_path=local_path,
                                 user_email=data.get("user_email"),
                                 since_days=365
                             )

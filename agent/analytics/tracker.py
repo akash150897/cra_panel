@@ -319,6 +319,61 @@ class AnalyticsTracker:
     # Git-derived developer activity (authoritative source of truth)
     # ──────────────────────────────────────────────────────────────
 
+    def ensure_local_clone(self, project_path: str, project_id: Optional[int] = None) -> Optional[str]:
+        """Return a LOCAL path to the repo so git commands work.
+
+        - If `project_path` is already a valid local git repo, returns it as-is.
+        - If it's a remote URL (http/https/git@), clones (or fetches) into a
+          persistent cache dir keyed by project_id (or URL hash) so analytics
+          has a long-lived copy across restarts.
+        Returns None on failure.
+        """
+        if not project_path:
+            return None
+
+        # Case 1: local directory that exists and is a git repo
+        if os.path.exists(project_path) and os.path.isdir(os.path.join(project_path, ".git")):
+            return project_path
+        if os.path.exists(project_path):
+            # Exists but not a git repo — nothing we can do
+            return project_path if os.path.isdir(project_path) else None
+
+        # Case 2: remote URL — cache clone
+        is_remote = project_path.startswith(("http://", "https://", "git@", "ssh://"))
+        if not is_remote:
+            return None
+
+        try:
+            import hashlib
+            key = str(project_id) if project_id is not None else hashlib.sha1(
+                project_path.encode("utf-8")
+            ).hexdigest()[:12]
+            cache_root = Path.home() / ".cra_cache" / "projects"
+            cache_root.mkdir(parents=True, exist_ok=True)
+            clone_dir = cache_root / f"project_{key}"
+
+            if clone_dir.exists() and (clone_dir / ".git").exists():
+                # Already cloned — just refresh refs
+                subprocess.run(
+                    ["git", "-C", str(clone_dir), "fetch", "--all", "--prune"],
+                    capture_output=True, text=True, timeout=120
+                )
+                return str(clone_dir)
+
+            # Fresh clone (full, not shallow, so git log has full history)
+            print(f"[Analytics] Cloning {project_path} → {clone_dir}")
+            result = subprocess.run(
+                ["git", "clone", "--no-single-branch", project_path, str(clone_dir)],
+                capture_output=True, text=True, timeout=300
+            )
+            if result.returncode != 0:
+                print(f"[Analytics] Clone failed: {result.stderr[:200]}")
+                return None
+            return str(clone_dir)
+        except Exception as e:
+            print(f"[Analytics] ensure_local_clone error: {e}")
+            return None
+
     def get_files_touched_by_user(self, project_path: str, user_email: str,
                                    since_days: int = 7,
                                    branch: Optional[str] = None) -> set:
@@ -721,7 +776,8 @@ class AnalyticsTracker:
                 for p in projects_scope:
                     if p['id'] not in meta['projects']:
                         continue
-                    p_path = p.get('path')
+                    # Resolve remote URLs → cached local clone so git commands work
+                    p_path = self.ensure_local_clone(p.get('path'), project_id=p.get('id'))
                     if not p_path or not os.path.exists(p_path):
                         continue
                     act = self.get_developer_activity(p_path, email, since_days=days)

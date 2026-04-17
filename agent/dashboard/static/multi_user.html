@@ -1486,7 +1486,11 @@
     // ── View Developer Code ─────────────────────────────────────
     async function viewDeveloperCode(email, name) {
       try {
-        const myProjectsRes = await fetch(`/api/my-projects?t=${Date.now()}`);
+        // Super admin has access to ALL projects; TLs/devs use my-projects.
+        const projectsUrl = currentRole === 'super_admin'
+          ? `/api/projects?t=${Date.now()}`
+          : `/api/my-projects?t=${Date.now()}`;
+        const myProjectsRes = await fetch(projectsUrl);
         const myProjects = await myProjectsRes.json();
         let developerProject = null;
         for (const project of myProjects) {

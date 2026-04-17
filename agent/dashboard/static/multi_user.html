@@ -1176,9 +1176,9 @@
           <p class="text-[11px] text-gray-500 mb-5" id="analyticsScope">Open issues deduplicated across all branches per project. Commits filtered by time window below.</p>
           <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
             <div class="card stat-card blue p-4"><div class="text-2xl font-bold text-white" id="statCommits">-</div><div class="text-xs text-gray-500 mt-1">Commits</div></div>
-            <div class="card stat-card red p-4" title="Deduplicated open issues. Same issue on multiple branches counts once. Issues fixed in the current branch are excluded."><div class="text-2xl font-bold text-white" id="statIssues">-</div><div class="text-xs text-gray-500 mt-1" id="statIssuesLabel">Open Issues</div></div>
-            <div class="card stat-card green p-4"><div class="text-2xl font-bold text-white" id="statQuality">-</div><div class="text-xs text-gray-500 mt-1">Quality Score</div></div>
-            <div class="card stat-card yellow p-4"><div class="text-2xl font-bold text-white" id="statEffort">-</div><div class="text-xs text-gray-500 mt-1">Effort Score</div></div>
+            <div class="card stat-card red p-4" title="Open issues across all branches of all in-scope projects. A file appearing on multiple branches is counted once, at its worst severity/count. Any developer's attributed issues are always ≤ this total."><div class="text-2xl font-bold text-white" id="statIssues">-</div><div class="text-xs text-gray-500 mt-1" id="statIssuesLabel">Open Issues</div></div>
+            <div class="card stat-card green p-4" title="Average developer quality. Per-dev: 100 − 18·log10(1 + issue-density·8) where density = attributed issues / files touched (fallback: commits×2). 0 issues → 100; ~1 issue/file → ~86; ~5 → ~69; ~20 → ~52."><div class="text-2xl font-bold text-white" id="statQuality">-</div><div class="text-xs text-gray-500 mt-1">Quality Score</div></div>
+            <div class="card stat-card yellow p-4" title="Team total effort. Per-dev: commits × 6 + (lines added + lines removed) × 0.04. Higher = more sustained contribution in the selected window."><div class="text-2xl font-bold text-white" id="statEffort">-</div><div class="text-xs text-gray-500 mt-1">Effort Score</div></div>
           </div>
           <div id="devAnalyticsSection" class="${isDev ? 'hidden' : ''} mb-6">
             <h3 class="text-sm font-semibold text-white mb-3">Developer Activity</h3>
@@ -1312,7 +1312,7 @@
               }).join('')
             : '';
           const winLabel = analyticsData.filter_label || analyticsFilter;
-          const headline = `Open issues = union across branches, deduped by file, issues <b>fixed in current branch excluded</b>. Developer commits window: <b class="text-accent-blue">${winLabel}</b>.`;
+          const headline = `Open issues = <b>union across all branches</b>, max-per-file (a file appearing on multiple branches counts once, at its worst). Developer commits window: <b class="text-accent-blue">${winLabel}</b>.`;
           scope.innerHTML = headline + perBranchHint;
         }
 

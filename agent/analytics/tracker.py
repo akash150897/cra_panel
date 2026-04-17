@@ -984,27 +984,25 @@ class AnalyticsTracker:
                 current_scan = branch_map[current_br]
                 current_files = _load_files_with_issues(current_scan)
 
-                # Build unified file map: present-in-current ∩ MAX across branches
+                # Build unified file map: UNION across ALL branches, MAX
+                # per-file. A file is included if it has issues on *any*
+                # branch — this prevents the contradiction where a dev's
+                # attributed-issues count (measured on their active branch)
+                # could exceed the project total (previously measured only
+                # against the current branch).
                 unified: Dict[str, Dict[str, int]] = {}
-                for fp, cur_bucket in current_files.items():
-                    best = {
-                        'total':    int(cur_bucket.get('total', 0) or 0),
-                        'errors':   int(cur_bucket.get('errors', 0) or 0),
-                        'warnings': int(cur_bucket.get('warnings', 0) or 0),
-                        'infos':    int(cur_bucket.get('infos', 0) or 0),
-                    }
-                    for s in scans_filt:
-                        if s['branch'] == current_br:
-                            continue
-                        other = _load_files_with_issues(s).get(fp)
-                        if other and int(other.get('total', 0) or 0) > best['total']:
-                            best = {
-                                'total':    int(other.get('total', 0) or 0),
-                                'errors':   int(other.get('errors', 0) or 0),
-                                'warnings': int(other.get('warnings', 0) or 0),
-                                'infos':    int(other.get('infos', 0) or 0),
-                            }
-                    unified[fp] = best
+                for s in scans_filt:
+                    files_here = _load_files_with_issues(s)
+                    for fp, bucket in files_here.items():
+                        cand = {
+                            'total':    int(bucket.get('total', 0) or 0),
+                            'errors':   int(bucket.get('errors', 0) or 0),
+                            'warnings': int(bucket.get('warnings', 0) or 0),
+                            'infos':    int(bucket.get('infos', 0) or 0),
+                        }
+                        prev = unified.get(fp)
+                        if prev is None or cand['total'] > prev['total']:
+                            unified[fp] = cand
 
                 proj_total    = sum(b['total']    for b in unified.values())
                 proj_errors   = sum(b['errors']   for b in unified.values())
@@ -1086,11 +1084,13 @@ class AnalyticsTracker:
                     # even if those files don't exist on the project's
                     # configured current branch.
                     scans_map = {s['branch']: s for s in scans_by_project.get(p['id'], [])}
+                    touched_union: set = set()
                     for br_info in act.get('branches', []):
                         br_name = br_info['name']
                         touched = self.get_files_touched_by_user(
                             p_path, email, since_days=days, branch=br_name
                         )
+                        touched_union |= touched
                         scan = scans_map.get(br_name)
                         branch_files = _load_files_with_issues(scan) if scan else {}
                         attributed = 0
@@ -1123,6 +1123,13 @@ class AnalyticsTracker:
                         if scan and scan.get('quality_score') is not None:
                             dev_quality_weighted.append(float(scan['quality_score']))
 
+                    # The `get_developer_activity` call above measured
+                    # files_touched against HEAD, which is often 0 when the
+                    # dev never merged to the default branch. Override with
+                    # the union across the branches they actually worked on.
+                    if touched_union:
+                        dev_files_touched = max(dev_files_touched, len(touched_union))
+
                 total_unique_commits += dev_total_commits
 
                 # Opt-in diagnostic: set CRA_DEBUG_ANALYTICS=1 to see why a
@@ -1140,16 +1147,21 @@ class AnalyticsTracker:
 
                 # ── Quality (per developer) ──
                 # Issue-density based, log-scaled so large projects don't
-                # crush to 0. A dev who touched N files with I attributed
-                # issues gets: 100 − 18·log10(1 + I/max(N,1)·8).
-                # Tuned so 0 issues → 100, 1 per file → ~86, 5/file → ~69,
-                # 20/file → ~52, 100/file → ~35.
+                # crush to 0. Denominator priority:
+                #   1. files touched (from git log) — most accurate
+                #   2. commits × 2 — reasonable proxy when git HEAD-scan
+                #      returned 0 (happens when HEAD is on a branch the dev
+                #      never committed to, a common real-world case)
+                #   3. 1 — floor so we never divide by zero
+                # Crucially, when there ARE attributed issues we MUST NOT
+                # return 100 (the old bug showed 100% for 262 open issues).
                 import math as _m
-                if dev_files_touched > 0 and dev_attributed_issues_max >= 0:
-                    density = dev_attributed_issues_max / max(dev_files_touched, 1)
-                    dev_quality = round(max(10.0, 100 - 18 * _m.log10(1 + density * 8)), 1)
+                if dev_attributed_issues_max <= 0:
+                    dev_quality = 100 if dev_total_commits > 0 else 0
                 else:
-                    dev_quality = 0 if dev_total_commits == 0 else 100
+                    denom = max(dev_files_touched or 0, dev_total_commits * 2, 1)
+                    density = dev_attributed_issues_max / denom
+                    dev_quality = round(max(10.0, 100 - 18 * _m.log10(1 + density * 8)), 1)
                 quality_scores.append(dev_quality)
 
                 # ── Effort (per developer) ──

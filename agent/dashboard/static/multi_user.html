@@ -987,12 +987,15 @@
 
     async function loadAnalyticsView(panel) {
       const isDev = currentRole === 'developer';
+      const branchHelpText = analyticsBranch === 'all'
+        ? 'Issues summed across ALL branches in selected period'
+        : `Issues on <b class="text-accent-blue">${analyticsBranch}</b> branch`;
       panel.innerHTML = `
         <div class="p-6 fade-in">
-          <div class="flex justify-between items-center mb-5">
+          <div class="flex justify-between items-center mb-2">
             <h2 class="text-lg font-bold text-white">${isDev ? 'My Activity' : 'Team Analytics'}</h2>
             <div class="flex items-center gap-2">
-              ${!isDev ? `<select id="analyticsBranch" onchange="changeAnalyticsBranch(this.value)" class="search-input rounded-lg px-3 py-1.5 text-xs text-white"><option value="all">All Branches</option><option value="main">main</option><option value="develop">develop</option></select>` : ''}
+              ${!isDev ? `<select id="analyticsBranch" onchange="changeAnalyticsBranch(this.value)" class="search-input rounded-lg px-3 py-1.5 text-xs text-white"><option value="all" ${analyticsBranch==='all'?'selected':''}>All Branches</option></select>` : ''}
               <select id="analyticsDays" onchange="changeAnalyticsDays(this.value)" class="search-input rounded-lg px-3 py-1.5 text-xs text-white">
                 <option value="7" ${analyticsDays===7?'selected':''}>7 days</option>
                 <option value="14" ${analyticsDays===14?'selected':''}>14 days</option>
@@ -1002,9 +1005,10 @@
               <button onclick="refreshAnalytics()" class="btn px-3 py-1.5 bg-white/5 text-gray-300 rounded-lg hover:bg-white/10 text-xs border border-border-subtle">Refresh</button>
             </div>
           </div>
+          <p class="text-[11px] text-gray-500 mb-5" id="analyticsScope">Scope: ${branchHelpText}</p>
           <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
             <div class="card stat-card blue p-4"><div class="text-2xl font-bold text-white" id="statCommits">-</div><div class="text-xs text-gray-500 mt-1">Commits</div></div>
-            <div class="card stat-card red p-4"><div class="text-2xl font-bold text-white" id="statIssues">-</div><div class="text-xs text-gray-500 mt-1">Issues</div></div>
+            <div class="card stat-card red p-4" title="Aggregated count. Same code on multiple branches is counted per-branch."><div class="text-2xl font-bold text-white" id="statIssues">-</div><div class="text-xs text-gray-500 mt-1" id="statIssuesLabel">Issues</div></div>
             <div class="card stat-card green p-4"><div class="text-2xl font-bold text-white" id="statQuality">-</div><div class="text-xs text-gray-500 mt-1">Quality Score</div></div>
             <div class="card stat-card yellow p-4"><div class="text-2xl font-bold text-white" id="statEffort">-</div><div class="text-xs text-gray-500 mt-1">Effort Score</div></div>
           </div>
@@ -1017,13 +1021,14 @@
                     <th class="px-4 py-2.5 text-xs font-medium text-gray-400">Developer</th>
                     <th class="px-4 py-2.5 text-xs font-medium text-gray-400 text-center">Projects</th>
                     <th class="px-4 py-2.5 text-xs font-medium text-gray-400 text-center">Commits</th>
-                    <th class="px-4 py-2.5 text-xs font-medium text-gray-400 text-center">Issues</th>
+                    <th class="px-4 py-2.5 text-xs font-medium text-gray-400 text-center" title="Total issues across all branches in period">Issues</th>
                     <th class="px-4 py-2.5 text-xs font-medium text-gray-400 text-center">Quality</th>
-                    <th class="px-4 py-2.5 text-xs font-medium text-gray-400 text-center">Branches</th>
+                    <th class="px-4 py-2.5 text-xs font-medium text-gray-400">Current Branch</th>
+                    <th class="px-4 py-2.5 text-xs font-medium text-gray-400">All Branches (issues)</th>
                     <th class="px-4 py-2.5 text-xs font-medium text-gray-400 text-center">Action</th>
                   </tr>
                 </thead>
-                <tbody id="devAnalyticsTable"><tr><td colspan="7" class="px-4 py-6 text-center text-gray-500 text-xs">Loading...</td></tr></tbody>
+                <tbody id="devAnalyticsTable"><tr><td colspan="8" class="px-4 py-6 text-center text-gray-500 text-xs">Loading...</td></tr></tbody>
               </table>
             </div>
           </div>
@@ -1042,39 +1047,135 @@
     async function fetchAnalyticsData() {
       try {
         let url = currentRole === 'developer' ? `/api/analytics?user_email=${currentUser.email}&days=${analyticsDays}` : `/api/analytics?days=${analyticsDays}`;
-        if (analyticsBranch !== 'all') url += `&branch=${analyticsBranch}`;
+        if (analyticsBranch !== 'all') url += `&branch=${encodeURIComponent(analyticsBranch)}`;
         const res = await fetch(url);
         analyticsData = await res.json();
         document.getElementById('statCommits').textContent = analyticsData.total_commits || 0;
         document.getElementById('statIssues').textContent = analyticsData.total_issues || 0;
         document.getElementById('statQuality').textContent = (analyticsData.avg_quality || 0) + '%';
         document.getElementById('statEffort').textContent = analyticsData.avg_effort || 0;
+
+        // Update issues label with scope clarity
+        const issuesLabel = document.getElementById('statIssuesLabel');
+        if (issuesLabel) {
+          issuesLabel.textContent = analyticsBranch === 'all'
+            ? `Issues (all branches combined)`
+            : `Issues on ${analyticsBranch}`;
+        }
+        // Update scope explanation
+        const scope = document.getElementById('analyticsScope');
+        if (scope) {
+          scope.innerHTML = analyticsBranch === 'all'
+            ? `Scope: Issues summed across <b class="text-accent-blue">ALL branches</b> in last ${analyticsDays} days. Use the dropdown to filter by a single branch.`
+            : `Scope: Filtering to <b class="text-accent-blue">${analyticsBranch}</b> branch only in last ${analyticsDays} days.`;
+        }
+
+        // Populate branch dropdown from actual developer data
+        const branchSelect = document.getElementById('analyticsBranch');
+        if (branchSelect && analyticsData.developers) {
+          const allBranches = new Set();
+          analyticsData.developers.forEach(d => (d.branches || []).forEach(b => allBranches.add(b)));
+          const sortedBranches = Array.from(allBranches).sort();
+          const currentVal = branchSelect.value;
+          branchSelect.innerHTML = `<option value="all" ${analyticsBranch==='all'?'selected':''}>All Branches</option>` +
+            sortedBranches.map(b => `<option value="${b}" ${b===analyticsBranch?'selected':''}>${b}</option>`).join('');
+        }
+
         if (currentRole !== 'developer' && analyticsData.developers) {
           const tbody = document.getElementById('devAnalyticsTable');
           if (!analyticsData.developers.length) {
-            tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-6 text-center text-gray-500 text-xs">No data</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" class="px-4 py-6 text-center text-gray-500 text-xs">No data</td></tr>';
           } else {
-            tbody.innerHTML = analyticsData.developers.map(dev => `
-              <tr class="border-b border-border-subtle/50 hover:bg-bg-hover/50 transition">
-                <td class="px-4 py-2.5 cursor-pointer" onclick="viewDeveloperCode('${dev.email}', '${dev.name}')">
-                  <div class="flex items-center gap-2">
-                    ${avatarHTML(dev.name, 'sm')}
-                    <div>
-                      <div class="text-sm font-medium text-white hover:text-accent-blue">${dev.name}</div>
-                      <div class="text-[10px] text-gray-500 mono">${dev.email}</div>
+            tbody.innerHTML = analyticsData.developers.map(dev => {
+              const current = dev.current_branch;
+              const stats = dev.branch_stats || [];
+              // Current branch badge with "current" indicator
+              const currentBadge = current ? `
+                <div class="flex items-center gap-1.5">
+                  <div class="w-1.5 h-1.5 rounded-full bg-accent-green pulse-dot"></div>
+                  <span class="inline-block px-2 py-0.5 text-[10px] rounded bg-accent-green/10 text-accent-green font-medium">${current}</span>
+                  ${stats[0] && stats[0].last_date ? `<span class="text-[9px] text-gray-500">${formatRelativeDate(stats[0].last_date)}</span>` : ''}
+                </div>` : '-';
+              // Branches breakdown with issue counts, max 3 visible, rest in expandable
+              const visibleBranches = stats.slice(0, 3);
+              const hiddenBranches = stats.slice(3);
+              const branchesHtml = stats.length === 0 ? '<span class="text-[10px] text-gray-500">-</span>' : `
+                <div class="flex flex-wrap gap-1 items-center">
+                  ${visibleBranches.map((b, i) => `
+                    <span class="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded ${i===0 ? 'bg-accent-green/10 text-accent-green border border-accent-green/30' : 'bg-accent-blue/10 text-accent-blue'}" title="${b.issues} issues, ${b.commits} commits, last: ${b.last_date||'unknown'}">
+                      ${b.name}
+                      <span class="text-[9px] opacity-80">(${b.issues})</span>
+                    </span>`).join('')}
+                  ${hiddenBranches.length > 0 ? `
+                    <button onclick="showBranchDetails('${dev.email}')" class="text-[10px] text-gray-400 hover:text-white underline">+${hiddenBranches.length} more</button>
+                  ` : ''}
+                </div>`;
+              return `
+                <tr class="border-b border-border-subtle/50 hover:bg-bg-hover/50 transition">
+                  <td class="px-4 py-2.5 cursor-pointer" onclick="viewDeveloperCode('${dev.email}', '${dev.name}')">
+                    <div class="flex items-center gap-2">
+                      ${avatarHTML(dev.name, 'sm')}
+                      <div>
+                        <div class="text-sm font-medium text-white hover:text-accent-blue">${dev.name}</div>
+                        <div class="text-[10px] text-gray-500 mono">${dev.email}</div>
+                      </div>
                     </div>
-                  </div>
-                </td>
-                <td class="px-4 py-2.5 text-center">${(dev.projects||[]).map(p=>`<span class="inline-block px-1.5 py-0.5 text-[10px] rounded bg-accent-green/10 text-accent-green mr-0.5">${p}</span>`).join('')||'-'}</td>
-                <td class="px-4 py-2.5 text-center text-sm text-white">${dev.commits}</td>
-                <td class="px-4 py-2.5 text-center text-sm ${dev.issues>0?'text-accent-red':'text-gray-400'}">${dev.issues}</td>
-                <td class="px-4 py-2.5 text-center"><span class="severity-badge ${dev.quality_score>=80?'bg-accent-green/10 text-accent-green':dev.quality_score>=60?'bg-accent-yellow/10 text-accent-yellow':'bg-accent-red/10 text-accent-red'}">${dev.quality_score}%</span></td>
-                <td class="px-4 py-2.5 text-center">${(dev.branches||[]).map(b=>`<span class="inline-block px-1.5 py-0.5 text-[10px] rounded bg-accent-blue/10 text-accent-blue mr-0.5">${b}</span>`).join('')||'-'}</td>
-                <td class="px-4 py-2.5 text-center"><button onclick="viewDeveloperCode('${dev.email}','${dev.name}')" class="text-accent-blue hover:text-white text-xs">View</button></td>
-              </tr>`).join('');
+                  </td>
+                  <td class="px-4 py-2.5 text-center">${(dev.projects||[]).map(p=>`<span class="inline-block px-1.5 py-0.5 text-[10px] rounded bg-accent-green/10 text-accent-green mr-0.5">${p}</span>`).join('')||'-'}</td>
+                  <td class="px-4 py-2.5 text-center text-sm text-white">${dev.commits}</td>
+                  <td class="px-4 py-2.5 text-center text-sm ${dev.issues>0?'text-accent-red':'text-gray-400'}" title="Sum of issues across ${dev.branch_count||0} branch(es) in period">${dev.issues}</td>
+                  <td class="px-4 py-2.5 text-center"><span class="severity-badge ${dev.quality_score>=80?'bg-accent-green/10 text-accent-green':dev.quality_score>=60?'bg-accent-yellow/10 text-accent-yellow':'bg-accent-red/10 text-accent-red'}">${dev.quality_score}%</span></td>
+                  <td class="px-4 py-2.5">${currentBadge}</td>
+                  <td class="px-4 py-2.5">${branchesHtml}</td>
+                  <td class="px-4 py-2.5 text-center"><button onclick="viewDeveloperCode('${dev.email}','${dev.name}')" class="text-accent-blue hover:text-white text-xs">View</button></td>
+                </tr>`;
+            }).join('');
           }
         }
       } catch (e) { console.error('Analytics error:', e); }
+    }
+
+    // Show all branches for a developer in a modal
+    function showBranchDetails(email) {
+      const dev = (analyticsData?.developers || []).find(d => d.email === email);
+      if (!dev) return;
+      const stats = dev.branch_stats || [];
+      showModal('branchDetailsModal', `
+        <h3 class="text-lg font-bold text-white mb-1">${dev.name}'s Branches</h3>
+        <p class="text-xs text-gray-500 mb-4">All branches with activity in the last ${analyticsDays} days</p>
+        <div class="space-y-2 max-h-[400px] overflow-y-auto">
+          ${stats.map((b, i) => `
+            <div class="card p-3 flex items-center justify-between ${i===0 ? 'border-accent-green/30' : ''}">
+              <div class="flex items-center gap-2">
+                ${i===0 ? '<div class="w-1.5 h-1.5 rounded-full bg-accent-green pulse-dot"></div>' : '<div class="w-1.5 h-1.5"></div>'}
+                <div>
+                  <div class="text-sm font-medium ${i===0 ? 'text-accent-green' : 'text-white'}">${b.name}${i===0 ? ' <span class="text-[10px] opacity-80">(current)</span>' : ''}</div>
+                  <div class="text-[10px] text-gray-500">Last activity: ${b.last_date || 'unknown'}</div>
+                </div>
+              </div>
+              <div class="flex gap-3 text-xs">
+                <span class="text-gray-400">Commits: <b class="text-white">${b.commits}</b></span>
+                <span class="${b.issues>0?'text-accent-red':'text-gray-400'}">Issues: <b>${b.issues}</b></span>
+                ${b.quality !== null ? `<span class="text-gray-400">Quality: <b class="text-white">${b.quality}%</b></span>` : ''}
+              </div>
+            </div>`).join('')}
+        </div>
+        <div class="mt-4 flex justify-end">
+          <button onclick="closeModal('branchDetailsModal')" class="btn px-4 py-2 bg-white/5 text-gray-300 text-sm rounded-lg hover:bg-white/10 border border-border-subtle">Close</button>
+        </div>
+      `);
+    }
+
+    function formatRelativeDate(dateStr) {
+      if (!dateStr) return '';
+      const d = new Date(dateStr);
+      const now = new Date();
+      const diffMs = now - d;
+      const diffDays = Math.floor(diffMs / (1000*60*60*24));
+      if (diffDays === 0) return 'today';
+      if (diffDays === 1) return 'yesterday';
+      if (diffDays < 7) return `${diffDays}d ago`;
+      return dateStr;
     }
 
     // ── My Projects View ────────────────────────────────────────

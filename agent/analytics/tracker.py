@@ -308,7 +308,7 @@ class AnalyticsTracker:
             avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else 0
             avg_effort = sum(effort_scores) / len(effort_scores) if effort_scores else 0
 
-            # Group by user and track branches and projects
+            # Group by user and track per-branch stats
             by_user = {}
             for d in data:
                 email = d['user_email']
@@ -320,7 +320,8 @@ class AnalyticsTracker:
                         'issues': 0,
                         'quality_scores': [],
                         'effort_scores': [],
-                        'branches': set(),
+                        # Per-branch breakdown: branch -> {issues, commits, last_date, quality}
+                        'branch_stats': {},
                         'projects': {}  # project_id -> project_name
                     }
                 by_user[email]['commits'] += d['commits_count']
@@ -329,9 +330,26 @@ class AnalyticsTracker:
                     by_user[email]['quality_scores'].append(d['code_quality_score'])
                 if d['effort_score']:
                     by_user[email]['effort_scores'].append(d['effort_score'])
-                if d.get('branch'):
-                    by_user[email]['branches'].add(d['branch'])
-                # Track projects
+                br = d.get('branch') or 'main'
+                if br not in by_user[email]['branch_stats']:
+                    by_user[email]['branch_stats'][br] = {
+                        'name': br,
+                        'issues': 0,
+                        'commits': 0,
+                        'quality': None,
+                        'last_date': None
+                    }
+                bs = by_user[email]['branch_stats'][br]
+                bs['issues'] += d['issues_found']
+                bs['commits'] += d['commits_count']
+                if d['code_quality_score']:
+                    bs['quality'] = float(d['code_quality_score'])
+                # Track most recent activity date per branch
+                d_date = d.get('date')
+                if d_date:
+                    d_date_str = d_date.isoformat() if hasattr(d_date, 'isoformat') else str(d_date)
+                    if bs['last_date'] is None or d_date_str > bs['last_date']:
+                        bs['last_date'] = d_date_str
                 if d.get('project_name'):
                     by_user[email]['projects'][d.get('project_id', 0)] = d['project_name']
 
@@ -339,8 +357,15 @@ class AnalyticsTracker:
             for user_data in by_user.values():
                 quality_list = user_data['quality_scores']
                 effort_list = user_data['effort_scores']
-                branches_list = sorted(user_data['branches'])
                 projects_list = list(user_data['projects'].values())
+                # Sort branches by last_date DESC (most recent first). Current = first.
+                branch_stats_list = sorted(
+                    user_data['branch_stats'].values(),
+                    key=lambda b: (b['last_date'] or ''),
+                    reverse=True
+                )
+                current_branch = branch_stats_list[0]['name'] if branch_stats_list else None
+                branches_list = [b['name'] for b in branch_stats_list]
                 developers.append({
                     'name': user_data['name'],
                     'email': user_data['email'],
@@ -350,6 +375,8 @@ class AnalyticsTracker:
                     'effort_score': round(sum(effort_list) / len(effort_list), 1) if effort_list else 0,
                     'branches': branches_list,
                     'branch_count': len(branches_list),
+                    'current_branch': current_branch,
+                    'branch_stats': branch_stats_list,  # [{name, issues, commits, quality, last_date}, ...]
                     'projects': projects_list,
                     'project_count': len(projects_list)
                 })

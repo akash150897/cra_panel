@@ -5,19 +5,20 @@ from typing import Optional, List, Dict, Any
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-# Default local PostgreSQL (user will change to cloud URL)
-DEFAULT_DB_URL = "postgresql://postgres:root@localhost:5432/postgres"
-
-# Super Admin credentials (user will edit these)
-SUPER_ADMIN_EMAIL = "admin@example.com"
-SUPER_ADMIN_PASSWORD = "admin123"
+# Single source of truth — shared Neon cloud Postgres + env overrides
+from agent.config.auth_config import (
+    DATABASE_URL as DEFAULT_DB_URL,
+    SUPER_ADMIN_EMAIL,
+    SUPER_ADMIN_PASSWORD,
+)
 
 
 class DatabaseManager:
     """Manages PostgreSQL connection and all database operations."""
 
     def __init__(self, db_url: Optional[str] = None):
-        self.db_url = db_url or os.getenv("CRA_DATABASE_URL", DEFAULT_DB_URL)
+        # Priority: explicit arg > CRA_DATABASE_URL env > auth_config default (Neon)
+        self.db_url = db_url or os.getenv("CRA_DATABASE_URL") or DEFAULT_DB_URL
         self.conn = None
 
     def connect(self):
